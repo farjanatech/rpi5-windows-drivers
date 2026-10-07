@@ -269,9 +269,17 @@ NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTE
         ULONG postBase=(postPointer>>16)&1023,postHandle=(postPointer>>10)&31;
         ULONG handle=postHandle;
         ULONG targetBase=Port?512u:0u;
-        if(Pitch!=Width*4 || postBase!=targetBase)handle=(handle+2)&31;
-        if(handle==(Port?0u:1u))handle=(handle+2)&31;
+        if(c1){
+            // VC6 PTR0 stores UPM handle-1. The firmware C1 handoff uses
+            // encoded handle 0 (hardware handle 1). Do not reuse that cached
+            // prefetch context after replacing the framebuffer.
+            handle=(postHandle+2)&31;
+        }else{
+            if(Pitch!=Width*4 || postBase!=targetBase)handle=(handle+2)&31;
+            if(handle==(Port?0u:1u))handle=(handle+2)&31;
+        }
         UpmDescriptor=(targetBase<<16)|(handle<<10);
+        if(c1)BddTrace(219,STATUS_SUCCESS,postPointer,UpmDescriptor);
         Pitch=Width*4;
     }
     {
@@ -308,7 +316,7 @@ NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTE
         for(ULONG frame=0;frame<FramebufferCount();++frame){
             PHYSICAL_ADDRESS address=Dma;address.QuadPart+=4096+SIZE_T(frame)*FrameBytes;
             ULONG own[10]={c1?0x4900c007u:0x490cc007u,0,c1?0x4000fff0u:0x0000fff0u,
-                           ((Height-1)<<16)|(Width-1),c1?0x80000048u:0xc0c0c0c0u,
+                           ((Height-1)<<16)|(Width-1),0xc0c0c0c0u,
                            UpmDescriptor|(ULONG)address.HighPart,address.LowPart,Pitch,0x80000000,0x80000000};
             for(ULONG i=0;i<10;++i)Write(0,0x4000+(OwnHead+frame*10+i)*4,own[i]);
         }
@@ -322,6 +330,8 @@ NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTE
             BddTrace(211,STATUS_SUCCESS,Read(0,0x24),Read(0,0x28));
             BddTrace(212,STATUS_SUCCESS,Read(0,0x2c),Read(0,0x22c));
             BddTrace(213,STATUS_SUCCESS,Read(0,0x230),UpmDescriptor);
+            BddTrace(220,STATUS_SUCCESS,Read(0,0x200),Read(0,0x204));
+            BddTrace(221,STATUS_SUCCESS,Read(0,0x208),Read(0,0x0c));
             for(ULONG i=0;i<10;i+=2)
                 BddTrace(214+i/2,STATUS_SUCCESS,
                     Read(0,0x4000+OwnHead*4+i*4),
@@ -453,7 +463,7 @@ VOID PI5_DISPLAY_HW::WriteCurrentLists(){
         if(DirectPixels[frame])address.QuadPart=DirectAddresses[frame];
         const BOOLEAN c1=SiliconRevision==0;
         ULONG list[10]={c1?0x4900c007u:0x490cc007u,0,c1?0x4000fff0u:0x0000fff0u,
-                        ((Height-1)<<16)|(Width-1),c1?0x80000048u:0xc0c0c0c0u,
+                        ((Height-1)<<16)|(Width-1),0xc0c0c0c0u,
                         UpmDescriptor|static_cast<ULONG>(address.HighPart),address.LowPart,Pitch,0x80000000,0x80000000};
         for(ULONG i=0;i<10;++i)Write(0,0x4000+(OwnHead+frame*10+i)*4,list[i]);
     }
