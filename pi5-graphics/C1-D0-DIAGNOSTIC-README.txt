@@ -63,3 +63,19 @@ C1 copy-scanout stabilization (0.1.0.166):
 - D0 (revision 1) keeps Damian's original direct MMIO flip path.
 - This change targets the real-world symptom where 0.1.0.165 had PnP/render
   success but visible black/corrupted desktop scanout on C1.
+
+
+C1 captured-context experiment (0.1.0.167):
+- Keeps Damian Edition RC1 firmware unchanged.
+- Keeps the C1 copy-scanout / primary-only path from 0.1.0.166.
+- C1 generated HVS lists now use the user's hardware-captured firmware
+  context word 0x80000048 instead of 0xc0c0c0c0.
+- D0 generated lists remain 0xc0c0c0c0 and all D0 behavior is unchanged.
+- The C1 context value is used in BOTH initial private-list creation and
+  WriteCurrentLists(), so mode/list regeneration cannot silently revert it.
+- Release trace telemetry:
+    210 = LPTRS / active DL head
+    211 = FETCHER_STATUS / FETCH_STATUS
+    212 = HANDLE_ERROR / BAD_UPM
+    213 = BAD_AXI / UPM descriptor
+    214-218 = active private raster words 0..9
