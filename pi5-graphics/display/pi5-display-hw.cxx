@@ -51,9 +51,22 @@ NTSTATUS PI5_DISPLAY_HW::FindPostPort(const DXGK_DEVICE_INFO *device,const DXGK_
                        read(base+28)!=display->Pitch || read(base+12)!=((display->Height-1)<<16 | (display->Width-1)))continue;
                     *port=candidate;status=STATUS_SUCCESS;break;
                 }
-                // C1 diagnostic build is intentionally read-only. Never hand
-                // control to Start() until the captured C1 raster-list format
-                // has been validated and the full C1 register path is implemented.
+                // C1 diagnostic build is intentionally read-only. Before
+                // returning failure, capture the complete boot handoff so the
+                // first write-enabled C1 build does not depend on assumptions.
+                if(c1&&candidate==0&&head<0x800){
+                    ULONG base=0x4000+head*4;
+                    BddTrace(200,STATUS_SUCCESS,read(4),read(0x0c));       // CXM / UBM
+                    BddTrace(201,STATUS_SUCCESS,read(0x20),read(0x70));   // HVS control / DISP2 CTRL0
+                    BddTrace(202,STATUS_SUCCESS,read(0x30),read(0x34));   // DISP0 CTRL0 / CTRL1
+                    BddTrace(203,STATUS_SUCCESS,read(0x40),read(0x44));   // DISP0 COB / STATUS
+                    for(ULONG w=0;w<10;w+=2)
+                        BddTrace(204+w/2,STATUS_SUCCESS,read(base+w*4),read(base+(w+1)*4));
+                    const ULONG own=0xf80;
+                    BddTrace(209,STATUS_SUCCESS,read(0x4000+own*4),read(0x4000+(own+19)*4));
+                }
+                // Never hand control to Start() until the captured C1 raster-list
+                // format has been validated and the full C1 register path exists.
             }
             MmUnmapIoSpace(hvs,Sizes[0]);return BddTrace(115,status,status==STATUS_SUCCESS?*port:MAXULONG,display->PhysicAddress.LowPart);
         }

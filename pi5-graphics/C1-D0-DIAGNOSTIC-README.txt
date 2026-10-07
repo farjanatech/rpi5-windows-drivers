@@ -38,3 +38,10 @@ Second C1 capture stage:
 - records HVS VERSION as trace ID 125;
 - never takes ownership of a C1 display in this build;
 - keeps Damian's D0 0x2454 path and validation unchanged.
+
+
+Final read-only C1 handoff capture:
+- IDs 200-203: C1 HVS sizing/control and display-0 registers.
+- IDs 204-208: all 10 words of the active C1 boot raster list.
+- ID 209: Damian private-list tail sentinels at 0xF80..0xF93.
+This build still never takes ownership of a C1 display.
