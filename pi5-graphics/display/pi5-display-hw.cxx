@@ -308,12 +308,25 @@ NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTE
         for(ULONG frame=0;frame<FramebufferCount();++frame){
             PHYSICAL_ADDRESS address=Dma;address.QuadPart+=4096+SIZE_T(frame)*FrameBytes;
             ULONG own[10]={c1?0x4900c007u:0x490cc007u,0,c1?0x4000fff0u:0x0000fff0u,
-                           ((Height-1)<<16)|(Width-1),0xc0c0c0c0,UpmDescriptor|(ULONG)address.HighPart,
-                           address.LowPart,Pitch,0x80000000,0x80000000};
+                           ((Height-1)<<16)|(Width-1),c1?0x80000048u:0xc0c0c0c0u,
+                           UpmDescriptor|(ULONG)address.HighPart,address.LowPart,Pitch,0x80000000,0x80000000};
             for(ULONG i=0;i<10;++i)Write(0,0x4000+(OwnHead+frame*10+i)*4,own[i]);
         }
         KeMemoryBarrier();InterlockedExchange(&Owned,1);Write(0,0x110,OwnHead);
         if(!WaitHead(OwnHead)){s=STATUS_IO_TIMEOUT;goto Fail;}
+        if(c1){
+            // Release-build C1 scanout telemetry. Keep this read-only: it is
+            // specifically for comparing the Windows private list against the
+            // user's known-good firmware C1 handoff.
+            BddTrace(210,STATUS_SUCCESS,Read(0,0x110),Read(0,0x11c));
+            BddTrace(211,STATUS_SUCCESS,Read(0,0x24),Read(0,0x28));
+            BddTrace(212,STATUS_SUCCESS,Read(0,0x2c),Read(0,0x22c));
+            BddTrace(213,STATUS_SUCCESS,Read(0,0x230),UpmDescriptor);
+            for(ULONG i=0;i<10;i+=2)
+                BddTrace(214+i/2,STATUS_SUCCESS,
+                    Read(0,0x4000+OwnHead*4+i*4),
+                    Read(0,0x4000+OwnHead*4+(i+1)*4));
+        }
     }
     BddTrace(20,STATUS_SUCCESS,OldHead,OwnHead);
     return STATUS_SUCCESS;
@@ -440,7 +453,8 @@ VOID PI5_DISPLAY_HW::WriteCurrentLists(){
         if(DirectPixels[frame])address.QuadPart=DirectAddresses[frame];
         const BOOLEAN c1=SiliconRevision==0;
         ULONG list[10]={c1?0x4900c007u:0x490cc007u,0,c1?0x4000fff0u:0x0000fff0u,
-                        ((Height-1)<<16)|(Width-1),0xc0c0c0c0,UpmDescriptor|static_cast<ULONG>(address.HighPart),address.LowPart,Pitch,0x80000000,0x80000000};
+                        ((Height-1)<<16)|(Width-1),c1?0x80000048u:0xc0c0c0c0u,
+                        UpmDescriptor|static_cast<ULONG>(address.HighPart),address.LowPart,Pitch,0x80000000,0x80000000};
         for(ULONG i=0;i<10;++i)Write(0,0x4000+(OwnHead+frame*10+i)*4,list[i]);
     }
 }
