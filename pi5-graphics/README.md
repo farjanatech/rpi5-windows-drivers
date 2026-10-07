@@ -15,3 +15,30 @@ The V3D provider additionally requires the graph and reset-gate services.
 The display framework retains its Microsoft Public License in
 `display/LICENSE.txt`. EDID timing-table attribution is in
 `display/EDID-LICENSE.txt`; both notices accompany the binary package.
+
+
+## Damian Edition C1 / D0 compatibility
+
+The `damian-edition` branch is being extended as a single auto-detecting
+graphics package for both BCM2712 generations.
+
+The matching Damian Edition UEFI exposes `RPI1001._HRV`:
+
+- `0` = C0/C1 generation
+- `1` = D0 generation
+- missing/other = legacy or unsupported firmware
+
+`Pi5Graphics.sys` reads that value directly from the ACPI PDO. The existing
+Damian D0 handoff acceptance remains unchanged.
+
+The first C1/D0 integration build additionally records both live HVS candidate
+heads and raster-list words in `HKLM\HARDWARE\Pi5DisplayDiagnostics\Trace`
+even in Release configuration. This is deliberate: C1 support will use a
+separate validated handoff parser derived from real C1 state rather than
+weakening the D0 checks.
+
+Trace IDs added for this work:
+
+- 116: silicon revision / POST framebuffer
+- 117-120: HDMI/HVS candidate 0
+- 121-124: HDMI/HVS candidate 1

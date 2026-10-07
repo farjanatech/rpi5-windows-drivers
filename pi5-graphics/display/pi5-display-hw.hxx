@@ -7,7 +7,7 @@
 class PI5_DISPLAY_HW {
 public:
     PI5_DISPLAY_HW() {RtlZeroMemory(this,sizeof(*this));}
-    static NTSTATUS FindPostPort(const DXGK_DEVICE_INFO *device,const DXGK_DISPLAY_INFORMATION *display,ULONG *port);
+    static NTSTATUS FindPostPort(const DXGK_DEVICE_INFO *device,const DXGK_DISPLAY_INFORMATION *display,ULONG *port,ULONG revision);
     NTSTATUS Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTERFACE *dxgk,
                    const DXGK_DISPLAY_INFORMATION *display,ULONG port=0,BOOLEAN ownsPost=TRUE);
     bool Active() const {return Owned!=0;}

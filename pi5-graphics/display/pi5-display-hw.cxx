@@ -8,7 +8,7 @@ static const ULONG Sizes[]={0x1a000,0x100,0x100,0x30,0x300,0x80,0x300,0x300,0x10
 static const ULONG Clocks[]={4,16,13,14};
 // GOP does not identify a connector. Match its framebuffer against the live
 // firmware raster lists instead of assuming HDMI0 owns the POST display.
-NTSTATUS PI5_DISPLAY_HW::FindPostPort(const DXGK_DEVICE_INFO *device,const DXGK_DISPLAY_INFORMATION *display,ULONG *port) {
+NTSTATUS PI5_DISPLAY_HW::FindPostPort(const DXGK_DEVICE_INFO *device,const DXGK_DISPLAY_INFORMATION *display,ULONG *port,ULONG revision) {
     PAGED_CODE();
     if(!device||!display||!port||!device->TranslatedResourceList)return STATUS_INVALID_PARAMETER;
     if(display->PhysicAddress.HighPart)return STATUS_NOT_SUPPORTED;
@@ -22,9 +22,21 @@ NTSTATUS PI5_DISPLAY_HW::FindPostPort(const DXGK_DEVICE_INFO *device,const DXGK_
             if(!hvs)return STATUS_INSUFFICIENT_RESOURCES;
             auto read=[hvs](ULONG offset){return READ_REGISTER_ULONG(reinterpret_cast<PULONG>(hvs+offset));};
             NTSTATUS status=STATUS_DEVICE_CONFIGURATION_ERROR;
+            BddTrace(116,STATUS_SUCCESS,revision,display->PhysicAddress.LowPart);
             if(read(0)==0x2454)for(ULONG candidate=0;candidate<2;++candidate){
                 ULONG head=read(0x110+candidate*0x40)&0xfff;
-                if(head>=0x800 || (read(0x11c+candidate*0x40)&0xfff)!=head)continue;
+                ULONG active=read(0x11c+candidate*0x40)&0xfff;
+                BddTrace(117+candidate*4,STATUS_SUCCESS,head,active);
+                if(head<0x800){
+                    ULONG base=0x4000+head*4;
+                    BddTrace(118+candidate*4,STATUS_SUCCESS,read(base),read(base+12));
+                    BddTrace(119+candidate*4,STATUS_SUCCESS,read(base+20),read(base+24));
+                    BddTrace(120+candidate*4,STATUS_SUCCESS,read(base+28),display->Pitch);
+                }
+                // Preserve Damian's existing D0/legacy acceptance rules for now.
+                // The C1 parser will be added only after a real C1 snapshot is
+                // captured, so D0 cannot regress from a guessed compatibility path.
+                if(head>=0x800 || active!=head)continue;
                 ULONG base=0x4000+head*4;
                 if(read(base)!=0x600cc007 || (read(base+20)&15)!=0 || read(base+24)!=display->PhysicAddress.LowPart ||
                    read(base+28)!=display->Pitch || read(base+12)!=((display->Height-1)<<16 | (display->Width-1)))continue;
