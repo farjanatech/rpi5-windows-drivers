@@ -16,18 +16,23 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Verify required WDK files
+      - name: Install WDK 26100 if needed
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
           $wdk='C:\Program Files (x86)\Windows Kits\10'
+          $ntddk="$wdk\Include\10.0.26100.0\km\ntddk.h"
+          if(!(Test-Path $ntddk)){
+            winget install --id Microsoft.WindowsWDK.10.0.26100 -e --silent --accept-package-agreements --accept-source-agreements
+            if($LASTEXITCODE){throw "WDK installation failed with exit code $LASTEXITCODE"}
+          }
           $required=@(
             "$wdk\Include\10.0.26100.0\km\ntddk.h",
             "$wdk\Lib\10.0.26100.0\km\arm64\ntoskrnl.lib",
             "$wdk\Lib\10.0.26100.0\km\arm64\displib.lib",
             "$wdk\bin\10.0.26100.0\x86\Inf2Cat.exe"
           )
-          foreach($p in $required){if(!(Test-Path $p)){throw "Missing WDK prerequisite: $p"}}
+          foreach($p in $required){if(!(Test-Path $p)){throw "Missing WDK prerequisite after install: $p"}}
 
       - name: Create test signing certificate
         shell: pwsh
