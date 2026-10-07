@@ -270,7 +270,7 @@ NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTE
     // A new UPM handle retires firmware's cached raster geometry.
     if(PostOwner){
         ULONG postPointer=Read(0,0x4014+OldHead*4);
-        ULONG postBase=(postPointer>>16)&0x1fffu,postHandle=(postPointer>>10)&31u;
+        ULONG postBase=(postPointer>>16)&1023u,postHandle=(postPointer>>10)&31u;
         ULONG handle=postHandle;
         ULONG targetBase=Port?512u:0u;
         if(c1){
