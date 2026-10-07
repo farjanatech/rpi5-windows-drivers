@@ -1,0 +1,70 @@
+name: Build Damian Edition Graphics Diagnostic
+
+on:
+  push:
+    branches:
+      - damian-edition
+    paths:
+      - 'pi5-graphics/**'
+      - '.github/workflows/build-damian-edition-graphics.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify required WDK files
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $wdk='C:\Program Files (x86)\Windows Kits\10'
+          $required=@(
+            "$wdk\Include\10.0.26100.0\km\ntddk.h",
+            "$wdk\Lib\10.0.26100.0\km\arm64\ntoskrnl.lib",
+            "$wdk\Lib\10.0.26100.0\km\arm64\displib.lib",
+            "$wdk\bin\10.0.26100.0\x86\Inf2Cat.exe"
+          )
+          foreach($p in $required){if(!(Test-Path $p)){throw "Missing WDK prerequisite: $p"}}
+
+      - name: Create test signing certificate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $cert=New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Farjanatech RPi5 Damian Edition Test' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(1)
+          "CERT_THUMB=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          New-Item Build -ItemType Directory -Force | Out-Null
+          Export-Certificate -Cert $cert -FilePath Build\Farjanatech-RPi5-Damian-Edition-Test.cer | Out-Null
+
+      - name: Build and sign ARM64 graphics package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          .\build.ps1 -Driver pi5-graphics -Output (Join-Path $PWD 'Build') -Configuration Release -SdkVersion '10.0.26100.0' -WdkVersion '10.0.26100.0' -CertificateThumbprint $env:CERT_THUMB
+          Get-ChildItem Build\pi5-graphics | Format-Table Name,Length
+
+      - name: Verify package identity
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Select-String -Path Build\pi5-graphics\pi5graphics.inf -Pattern '0.1.0.162','ACPI\\RPI1001'
+          foreach($f in @('Pi5Graphics.sys','Pi5GraphicsPower.sys','Pi5D3D.dll','pi5graphics.cat')){if(!(Test-Path (Join-Path 'Build\pi5-graphics' $f))){throw "Missing package file: $f"}}
+
+      - name: Assemble diagnostic ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          Copy-Item Build\Farjanatech-RPi5-Damian-Edition-Test.cer Build\pi5-graphics\
+          Copy-Item pi5-graphics\Install-Graphics-Diagnostic.ps1 Build\pi5-graphics\
+          Copy-Item pi5-graphics\C1-D0-DIAGNOSTIC-README.txt Build\pi5-graphics\
+          $zip='Build\RPi5-Damian-Edition-C1-D0-Graphics-Diagnostic-0.1.0.162.zip'
+          Compress-Archive -Path Build\pi5-graphics\* -DestinationPath $zip -CompressionLevel Optimal -Force
+          Get-FileHash $zip -Algorithm SHA256 | Format-List
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RPi5-Damian-Edition-C1-D0-Graphics-Diagnostic-0.1.0.162
+          path: Build/RPi5-Damian-Edition-C1-D0-Graphics-Diagnostic-0.1.0.162.zip
+          if-no-files-found: error
