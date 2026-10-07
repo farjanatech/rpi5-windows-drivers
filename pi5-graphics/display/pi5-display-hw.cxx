@@ -259,8 +259,12 @@ NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTE
     }
     for(ULONG i=0;i<10*FramebufferCount();++i){SavedList[i]=Read(0,0x4000+(OwnHead+i)*4);if(SavedList[i]!=0xb0b0b0b0)goto Fail;}
     for(ULONG i=0;i<PostListWords;++i)PostList[i]=Read(0,0x4000+(OldHead+i)*4);
-    s=OpenMonitor();if(s!=STATUS_SUCCESS)goto Fail;
+    if(c1)BddTrace(222,STATUS_SUCCESS,OldHead,PostListWords);
+    s=OpenMonitor();
+    if(c1)BddTrace(223,s,Port,Monitor.Count);
+    if(s!=STATUS_SUCCESS)goto Fail;
     SaveNative(&OriginalNative);
+    if(c1)BddTrace(224,STATUS_SUCCESS,NativeMaxClock,Monitor.Bytes);
     // GOP permits row padding. Keep the exact POST layout for handback, while
     // the native scanout allocations use the packed pitch required by DWM.
     // A new UPM handle retires firmware's cached raster geometry.
@@ -405,8 +409,11 @@ NTSTATUS PI5_DISPLAY_HW::OpenMonitor(){
     InitializeObjectAttributes(&a,&name,OBJ_KERNEL_HANDLE|OBJ_CASE_INSENSITIVE,nullptr,nullptr);
     NTSTATUS s=ZwCreateFile(&MailboxHandle,GENERIC_READ|SYNCHRONIZE,&a,&io,nullptr,0,
         FILE_SHARE_READ|FILE_SHARE_WRITE,FILE_OPEN,FILE_SYNCHRONOUS_IO_NONALERT|FILE_NON_DIRECTORY_FILE,nullptr,0);
+    if(SiliconRevision==0)BddTrace(225,s,Port,0);
     if(s!=STATUS_SUCCESS)return s;
-    return RefreshMonitor(FALSE);
+    s=RefreshMonitor(FALSE);
+    if(SiliconRevision==0)BddTrace(226,s,Monitor.Bytes,Monitor.Count);
+    return s;
 }
 NTSTATUS PI5_DISPLAY_HW::RefreshMonitor(BOOLEAN requireEdid){
     PAGED_CODE();
