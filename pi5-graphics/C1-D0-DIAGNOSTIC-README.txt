@@ -105,3 +105,21 @@ C1 fresh-UPM-range experiment (0.1.0.170):
   229 = live UBM size / selected per-port partition limit
 - Trace 219 still records firmware PTR0 / final Windows UPM descriptor.
 
+C1 pre-OpenMonitor predicate diagnostic (0.1.0.171):
+- Triggered because 0.1.0.170 returned Code 43 at Start stage 7 before trace 222.
+- The 0.1.0.170 fresh-UPM-range code is retained but is NOT changed by this build.
+- C1-only telemetry now isolates the exact validation group between trace 33 and trace 222.
+- D0 keeps the prior validation path unchanged.
+- New traces:
+  230 = HVS VERSION / CXM size
+  231 = live UBM size / required UPM words
+  232 = HVS display mode / PV control
+  233 = PV format / PV status
+  234 = PV vertical register / HVS idle register
+  235 = requested HVS head / active HVS head
+  236 = display-list word 0 / private-list head
+  237-240 = firmware POST raster words and framebuffer-high validation
+  241 = firmware list-walk result or first failing pointer/word
+  242 = private-tail sentinel result or first failing index/value
+- A nonzero trace status identifies the first rejected predicate group.
+

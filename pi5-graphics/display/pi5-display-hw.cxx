@@ -229,35 +229,105 @@ NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTE
     }
     const BOOLEAN c1=SiliconRevision==0;
     const ULONG expectedVersion=c1?0x2453u:0x2454u;
-    if(Read(0,0)!=expectedVersion || Read(0,4)!=4096 || Read(0,0x0c)<1024 ||
-       (((Pitch+62)/32)*64+255)/256>512 || Read(0,0x100)!=(0x80000000u|((Width-1)<<16)|(Height-1)) ||
-       !(Read(1,0)&1) || Read(1,4)!=3 || Read(1,0x24)!=0 ||
-       (Read(1,0x18)&65535)!=Height || Read(0,0x180)!=0)goto Fail;
-    OldHead=Read(0,0x110)&0xfff;
-    if(OldHead>=0x800 || (Read(0,0x11c)&0xfff)!=OldHead || Read(0,0x4000)!=0x80000000)goto Fail;
-    if(!PostOwner&&display->PhysicAddress.QuadPart)goto Fail;
     // Firmware may boot both connected HDMI outputs with independent raster
     // lists. C1 and D0 use the same GEN6 list format, except fixed alpha:
     // C1: CTL0 no alpha-mask bits, CTL2 fixed-alpha mode bit 30.
     // D0: fixed-alpha mask in CTL0, CTL2 mode bits clear.
     const ULONG postCtl0=c1?0x6000c007u:0x600cc007u;
     const ULONG postCtl2=c1?0x4000fff0u:0x0000fff0u;
-    if(PostOwner||Read(0,0x4000+OldHead*4)==postCtl0){
-       if(Read(0,0x4000+OldHead*4)!=postCtl0 || Read(0,0x4004+OldHead*4)!=0 ||
-       Read(0,0x4008+OldHead*4)!=postCtl2 || Read(0,0x400c+OldHead*4)!=((Height-1)<<16 | (Width-1)) ||
-       Read(0,0x401c+OldHead*4)!=Pitch)goto Fail;
-       if(PostOwner&&((Read(0,0x4014+OldHead*4)&15)!=0 || Read(0,0x4018+OldHead*4)!=display->PhysicAddress.LowPart ||
-          display->PhysicAddress.HighPart))goto Fail;
+    if(c1){
+        // 0.1.0.169 succeeded through this block while 0.1.0.170 failed here
+        // before any UPM-range code ran. Snapshot each predicate group once
+        // and report the first rejected group without changing D0 behavior.
+        const ULONG version=Read(0,0),cxm=Read(0,4),ubm=Read(0,0x0c);
+        const ULONG upmNeed=(((Pitch+62)/32)*64+255)/256;
+        BOOLEAN ok=version==expectedVersion && cxm==4096 && ubm>=1024 && upmNeed<=512;
+        NTSTATUS diag=ok?STATUS_SUCCESS:STATUS_DEVICE_CONFIGURATION_ERROR;
+        BddTrace(230,diag,version,cxm);
+        BddTrace(231,diag,ubm,upmNeed);
+        if(!ok)goto Fail;
+
+        const ULONG mode=Read(0,0x100),pvCtrl=Read(1,0),pvFormat=Read(1,4);
+        const ULONG pvStatus=Read(1,0x24),pvV=Read(1,0x18),hvsIdle=Read(0,0x180);
+        ok=mode==(0x80000000u|((Width-1)<<16)|(Height-1)) &&
+           (pvCtrl&1) && pvFormat==3 && pvStatus==0 &&
+           (pvV&65535)==Height && hvsIdle==0;
+        diag=ok?STATUS_SUCCESS:STATUS_DEVICE_CONFIGURATION_ERROR;
+        BddTrace(232,diag,mode,pvCtrl);
+        BddTrace(233,diag,pvFormat,pvStatus);
+        BddTrace(234,diag,pvV,hvsIdle);
+        if(!ok)goto Fail;
+
+        const ULONG requested=Read(0,0x110),active=Read(0,0x11c),listZero=Read(0,0x4000);
+        OldHead=requested&0xfff;
+        ok=OldHead<0x800 && (active&0xfff)==OldHead && listZero==0x80000000;
+        diag=ok?STATUS_SUCCESS:STATUS_DEVICE_CONFIGURATION_ERROR;
+        BddTrace(235,diag,requested,active);
+        BddTrace(236,diag,listZero,OwnHead);
+        if(!ok)goto Fail;
+
+        if(!PostOwner&&display->PhysicAddress.QuadPart){
+            BddTrace(237,STATUS_DEVICE_CONFIGURATION_ERROR,display->PhysicAddress.LowPart,display->PhysicAddress.HighPart);
+            goto Fail;
+        }
+
+        const ULONG w0=Read(0,0x4000+OldHead*4),w1=Read(0,0x4004+OldHead*4);
+        const ULONG w2=Read(0,0x4008+OldHead*4),w3=Read(0,0x400c+OldHead*4);
+        const ULONG w5=Read(0,0x4014+OldHead*4),w6=Read(0,0x4018+OldHead*4),w7=Read(0,0x401c+OldHead*4);
+        ok=!PostOwner&&w0!=postCtl0;
+        if(PostOwner||w0==postCtl0){
+            ok=w0==postCtl0 && w1==0 && w2==postCtl2 &&
+               w3==((Height-1)<<16 | (Width-1)) && w7==Pitch;
+            if(ok&&PostOwner)ok=(w5&15)==0 && w6==display->PhysicAddress.LowPart &&
+                                 display->PhysicAddress.HighPart==0;
+        }
+        diag=ok?STATUS_SUCCESS:STATUS_DEVICE_CONFIGURATION_ERROR;
+        BddTrace(237,diag,w0,w1);
+        BddTrace(238,diag,w2,w3);
+        BddTrace(239,diag,w5,w6);
+        BddTrace(240,diag,w7,display->PhysicAddress.HighPart);
+        if(!ok)goto Fail;
+
+        // Validate that the firmware list walk never enters our reserved tail.
+        for(ULONG p=OldHead,n=0;;){
+            if(p>=0x800 || ++n>64){BddTrace(241,STATUS_DEVICE_CONFIGURATION_ERROR,p,n);goto Fail;}
+            ULONG w=Read(0,0x4000+p*4);
+            if(w==0x80000000){PostListWords=p-OldHead+1;BddTrace(241,STATUS_SUCCESS,p,PostListWords);break;}
+            if(w!=0x20000000&&!(p==OldHead&&w==postCtl0)){BddTrace(241,STATUS_DEVICE_CONFIGURATION_ERROR,p,w);goto Fail;}
+            p+=32;
+        }
+        const ULONG tailWords=10*FramebufferCount();
+        for(ULONG i=0;i<tailWords;++i){
+            SavedList[i]=Read(0,0x4000+(OwnHead+i)*4);
+            if(SavedList[i]!=0xb0b0b0b0){BddTrace(242,STATUS_DEVICE_CONFIGURATION_ERROR,i,SavedList[i]);goto Fail;}
+        }
+        BddTrace(242,STATUS_SUCCESS,tailWords,0xb0b0b0b0);
+    }else{
+        // Preserve Damian's D0 validation path exactly.
+        if(Read(0,0)!=expectedVersion || Read(0,4)!=4096 || Read(0,0x0c)<1024 ||
+           (((Pitch+62)/32)*64+255)/256>512 || Read(0,0x100)!=(0x80000000u|((Width-1)<<16)|(Height-1)) ||
+           !(Read(1,0)&1) || Read(1,4)!=3 || Read(1,0x24)!=0 ||
+           (Read(1,0x18)&65535)!=Height || Read(0,0x180)!=0)goto Fail;
+        OldHead=Read(0,0x110)&0xfff;
+        if(OldHead>=0x800 || (Read(0,0x11c)&0xfff)!=OldHead || Read(0,0x4000)!=0x80000000)goto Fail;
+        if(!PostOwner&&display->PhysicAddress.QuadPart)goto Fail;
+        if(PostOwner||Read(0,0x4000+OldHead*4)==postCtl0){
+           if(Read(0,0x4000+OldHead*4)!=postCtl0 || Read(0,0x4004+OldHead*4)!=0 ||
+           Read(0,0x4008+OldHead*4)!=postCtl2 || Read(0,0x400c+OldHead*4)!=((Height-1)<<16 | (Width-1)) ||
+           Read(0,0x401c+OldHead*4)!=Pitch)goto Fail;
+           if(PostOwner&&((Read(0,0x4014+OldHead*4)&15)!=0 || Read(0,0x4018+OldHead*4)!=display->PhysicAddress.LowPart ||
+              display->PhysicAddress.HighPart))goto Fail;
+        }
+        // Validate that the firmware list walk never enters our reserved tail.
+        for(ULONG p=OldHead,n=0;;){
+            if(p>=0x800 || ++n>64)goto Fail;
+            ULONG w=Read(0,0x4000+p*4);
+            if(w==0x80000000){PostListWords=p-OldHead+1;break;}
+            if(w!=0x20000000&&!(p==OldHead&&w==postCtl0))goto Fail;
+            p+=32;
+        }
+        for(ULONG i=0;i<10*FramebufferCount();++i){SavedList[i]=Read(0,0x4000+(OwnHead+i)*4);if(SavedList[i]!=0xb0b0b0b0)goto Fail;}
     }
-    // Validate that the firmware list walk never enters our reserved tail.
-    for(ULONG p=OldHead,n=0;;){
-        if(p>=0x800 || ++n>64)goto Fail;
-        ULONG w=Read(0,0x4000+p*4);
-        if(w==0x80000000){PostListWords=p-OldHead+1;break;}
-        if(w!=0x20000000&&!(p==OldHead&&w==postCtl0))goto Fail;
-        p+=32;
-    }
-    for(ULONG i=0;i<10*FramebufferCount();++i){SavedList[i]=Read(0,0x4000+(OwnHead+i)*4);if(SavedList[i]!=0xb0b0b0b0)goto Fail;}
     for(ULONG i=0;i<PostListWords;++i)PostList[i]=Read(0,0x4000+(OldHead+i)*4);
     if(c1)BddTrace(222,STATUS_SUCCESS,OldHead,PostListWords);
     s=OpenMonitor();
