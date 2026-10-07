@@ -79,3 +79,14 @@ C1 captured-context experiment (0.1.0.167):
     212 = HANDLE_ERROR / BAD_UPM
     213 = BAD_AXI / UPM descriptor
     214-218 = active private raster words 0..9
+
+
+C1 UPM experiment (0.1.0.168):
+- Restores generated Context to 0xc0c0c0c0.
+- C1 primary no longer reuses the firmware UPM selection after replacing the framebuffer.
+- C1 advances the encoded UPM selection by two positions for this diagnostic.
+- D0 behavior is unchanged.
+- New traces:
+  219 firmware PTR0 / selected Windows UPM descriptor
+  220 C1 UPM isolation registers 0 / 1
+  221 C1 UPM isolation register 2 / UBM size
