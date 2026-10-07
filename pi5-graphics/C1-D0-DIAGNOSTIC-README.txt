@@ -90,3 +90,18 @@ C1 UPM experiment (0.1.0.168):
   219 firmware PTR0 / selected Windows UPM descriptor
   220 C1 UPM isolation registers 0 / 1
   221 C1 UPM isolation register 2 / UBM size
+
+C1 fresh-UPM-range experiment (0.1.0.170):
+- Triggered by a real 0.1.0.169 takeover that was driver-healthy but still visibly ARTIFACT.
+- Keeps the fresh C1 UPM handle introduced in 0.1.0.168.
+- Also gives Windows a non-overlapping UPM memory range instead of reusing firmware base 0.
+- Mirrors upstream VC6 UPM sizing: raster fetch region, two buffered lines, 256-byte UBM words.
+- The Windows base begins immediately after the firmware allocation and is checked against
+  both the existing 512-word per-port partition and the live SCALER6_UBM_SIZE value.
+- D0 behavior is unchanged; C1 remains primary-only and copy-scanout.
+- New traces:
+  227 = firmware UPM base / selected Windows UPM base
+  228 = firmware UPM words / Windows UPM words
+  229 = live UBM size / selected per-port partition limit
+- Trace 219 still records firmware PTR0 / final Windows UPM descriptor.
+

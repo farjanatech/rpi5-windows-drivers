@@ -270,14 +270,34 @@ NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTE
     // A new UPM handle retires firmware's cached raster geometry.
     if(PostOwner){
         ULONG postPointer=Read(0,0x4014+OldHead*4);
-        ULONG postBase=(postPointer>>16)&1023,postHandle=(postPointer>>10)&31;
+        ULONG postBase=(postPointer>>16)&0x1fffu,postHandle=(postPointer>>10)&31u;
         ULONG handle=postHandle;
         ULONG targetBase=Port?512u:0u;
         if(c1){
-            // VC6 PTR0 stores UPM handle-1. The firmware C1 handoff uses
-            // encoded handle 0 (hardware handle 1). Do not reuse that cached
-            // prefetch context after replacing the framebuffer.
-            handle=(postHandle+2)&31;
+            // VC6 PTR0 names both a UPM handle and a UPM memory range.
+            // 0.1.0.169 proved that changing only the handle is insufficient
+            // on C1: the physical output remained corrupted while BAD_UPM and
+            // BAD_AXI stayed clear. Mirror upstream VC6 sizing and move the
+            // Windows prefetch buffer completely past the firmware allocation.
+            const ULONG postBufferLines=2u<<((postPointer>>8)&3u);
+            const ULONG windowsPitch=Width*4u;
+            const ULONG postWordsPerLine=(Pitch+62u)/32u;
+            const ULONG windowsWordsPerLine=(windowsPitch+62u)/32u;
+            const ULONG postUpmWords=(postWordsPerLine*32u*postBufferLines+255u)/256u;
+            const ULONG windowsUpmWords=(windowsWordsPerLine*32u*2u+255u)/256u;
+            const ULONG partitionBase=Port?512u:0u;
+            const ULONG partitionLimit=partitionBase+512u;
+            const ULONG ubmWords=Read(0,0x0c);
+            if(postBase<partitionBase || postBase>=partitionLimit ||
+               !postUpmWords || !windowsUpmWords)goto Fail;
+            targetBase=postBase+postUpmWords;
+            if(targetBase<postBase || targetBase>0x1fffu ||
+               targetBase+windowsUpmWords>partitionLimit ||
+               targetBase+windowsUpmWords>ubmWords)goto Fail;
+            handle=(postHandle+2)&31u;
+            BddTrace(227,STATUS_SUCCESS,postBase,targetBase);
+            BddTrace(228,STATUS_SUCCESS,postUpmWords,windowsUpmWords);
+            BddTrace(229,STATUS_SUCCESS,ubmWords,partitionLimit);
         }else{
             if(Pitch!=Width*4 || postBase!=targetBase)handle=(handle+2)&31;
             if(handle==(Port?0u:1u))handle=(handle+2)&31;
