@@ -47,10 +47,19 @@ Final read-only C1 handoff capture:
 This build still never takes ownership of a C1 display.
 
 
-First write-enabled C1 milestone (0.1.0.165):
+First write-enabled C1 milestone (0.1.0.166):
 - C1 HVS 0x2453 and D0 HVS 0x2454 are selected by the existing RPI1001._HRV.
 - C1 SCALER6 per-display registers are translated from Damian's canonical D0 offsets.
 - C1 raster lists use CTL0 0x4900c007 and CTL2 0x4000fff0.
 - D0 keeps Damian's 0x490cc007 / 0x0000fff0 list and D0 register offsets.
 - C1 is forced to primary/single-head for this first takeover test.
 - The reserved HVS tail at 0xf80 was verified unused on the user's C1 board before enabling writes.
+
+
+C1 copy-scanout stabilization (0.1.0.166):
+- Reads RPI1001._HRV in AddDevice before WDDM capabilities are queried.
+- C1 (revision 0) does NOT advertise/use FlipOnVSyncMmIo.
+- C1 uses Damian's existing CopyScanout -> native common-buffer -> HVS path.
+- D0 (revision 1) keeps Damian's original direct MMIO flip path.
+- This change targets the real-world symptom where 0.1.0.165 had PnP/render
+  success but visible black/corrupted desktop scanout on C1.

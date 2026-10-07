@@ -1,5 +1,32 @@
 #include "precomp.h"
 #include "gpu.h"
+#include <acpiioct.h>
+
+static NTSTATUS Pi5EvalAcpiInteger(PDEVICE_OBJECT device,const CHAR name[4],ULONG *value)
+{
+    if(!device||!value)return STATUS_INVALID_PARAMETER;
+    ACPI_EVAL_INPUT_BUFFER input={};
+    ACPI_EVAL_OUTPUT_BUFFER output={};
+    KEVENT event;IO_STATUS_BLOCK iosb={};
+    input.Signature=ACPI_EVAL_INPUT_BUFFER_SIGNATURE;
+    RtlCopyMemory(input.MethodName,name,4);
+    KeInitializeEvent(&event,NotificationEvent,FALSE);
+    PIRP irp=IoBuildDeviceIoControlRequest(IOCTL_ACPI_EVAL_METHOD,device,
+        &input,sizeof(input),&output,sizeof(output),FALSE,&event,&iosb);
+    if(!irp)return STATUS_INSUFFICIENT_RESOURCES;
+    NTSTATUS status=IoCallDriver(device,irp);
+    if(status==STATUS_PENDING){
+        KeWaitForSingleObject(&event,Executive,KernelMode,FALSE,nullptr);
+        status=iosb.Status;
+    }
+    if(!NT_SUCCESS(status))return status;
+    if(output.Signature!=ACPI_EVAL_OUTPUT_BUFFER_SIGNATURE||output.Count!=1||
+       output.Argument[0].Type!=ACPI_METHOD_ARGUMENT_INTEGER||
+       output.Argument[0].DataLength!=sizeof(ULONG))return STATUS_ACPI_INVALID_DATA;
+    *value=output.Argument[0].Argument;
+    return STATUS_SUCCESS;
+}
+
 #ifdef PI5_FULL_DISPLAY
 #include "../display/bdd.hxx"
 #if DBG
@@ -323,12 +350,20 @@ static VOID Worker(PVOID context){
 #endif
     PsTerminateSystemThread(STATUS_SUCCESS);
 }
-static NTSTATUS APIENTRY Add(DEVICE_OBJECT*pdo,PVOID *out){auto a=static_cast<Adapter*>(Allocate(sizeof(Adapter)));if(!a)return STATUS_INSUFFICIENT_RESOURCES;KeInitializeSpinLock(&a->lock);KeInitializeMutex(&a->gpuLock,0);KeInitializeEvent(&a->wake,SynchronizationEvent,FALSE);KeInitializeEvent(&a->idle,NotificationEvent,TRUE);UNREFERENCED_PARAMETER(pdo);
+static NTSTATUS APIENTRY Add(DEVICE_OBJECT*pdo,PVOID *out){auto a=static_cast<Adapter*>(Allocate(sizeof(Adapter)));if(!a)return STATUS_INSUFFICIENT_RESOURCES;KeInitializeSpinLock(&a->lock);KeInitializeMutex(&a->gpuLock,0);KeInitializeEvent(&a->wake,SynchronizationEvent,FALSE);KeInitializeEvent(&a->idle,NotificationEvent,TRUE);
 #ifdef PI5_FULL_DISPLAY
     PVOID display=nullptr;NTSTATUS status=BddDdiAddDevice(pdo,&display);if(status!=STATUS_SUCCESS){Free(a);return status;}a->display=static_cast<BASIC_DISPLAY_DRIVER*>(display);a->display->m_Native.FullWddm();KeInitializeMutex(&a->primaryLock,0);a->primary.offset=MAXULONGLONG;KeInitializeDpc(&a->displayWake,DisplayWake,a);
 #endif
 #ifdef PI5_FULL_DISPLAY
-    a->gpu.opaqueLoads=ConsumeFlipTrial(L"OpaqueLoads",TRUE);a->mmioFlips=ConsumeFlipTrial(L"MmioFlips",TRUE);a->asyncFlips=ConsumeFlipTrial(L"AsyncFlips");Pi5Trace(85,STATUS_SUCCESS,a->asyncFlips,a->mmioFlips);
+    ULONG silicon=MAXULONG;NTSTATUS siliconStatus=Pi5EvalAcpiInteger(pdo,"_HRV",&silicon);
+    a->gpu.opaqueLoads=ConsumeFlipTrial(L"OpaqueLoads",TRUE);
+    // C1 primary takeover itself is stable, but direct HVS scanout from the
+    // GPU segment produced visible corruption on real C1 hardware with
+    // Windows 22621. Use the existing copy-to-native-scanout path on C1.
+    // D0 keeps Damian's original MMIO flip path unchanged.
+    a->mmioFlips=(NT_SUCCESS(siliconStatus)&&silicon==0)?FALSE:ConsumeFlipTrial(L"MmioFlips",TRUE);
+    a->asyncFlips=ConsumeFlipTrial(L"AsyncFlips");
+    Pi5Trace(85,siliconStatus,a->asyncFlips|(a->mmioFlips?2u:0u),silicon);
     a->display->m_Secondary.FullWddm();a->display->m_SecondHeadEnabled=a->mmioFlips&&ConsumeFlipTrial(L"DualHead",TRUE);a->display->m_AutoHotplug=TRUE;
 #if DBG
     a->gpu.profileCounters=ConsumeFlipTrial(L"ProfileCounters");
