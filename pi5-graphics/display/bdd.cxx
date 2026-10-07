@@ -137,6 +137,9 @@ NTSTATUS BASIC_DISPLAY_DRIVER::StartDevice(_In_  DXGK_START_INFO*   pDxgkStartIn
         if(NT_SUCCESS(revisionStatus)){
             if(revision>1)return STATUS_NOT_SUPPORTED;
             m_SiliconRevision=revision;
+            // First C1 write-enabled milestone: validate one physical output
+            // before extending C1 to hotplug/dual-head. D0 is unchanged.
+            if(revision==0){m_SecondHeadEnabled=FALSE;m_AutoHotplug=FALSE;}
         }
     }
 
@@ -171,7 +174,7 @@ NTSTATUS BASIC_DISPLAY_DRIVER::StartDevice(_In_  DXGK_START_INFO*   pDxgkStartIn
     Status=PI5_DISPLAY_HW::FindPostPort(&m_DeviceInfo,&m_CurrentModes[0].DispInfo,&m_PostTarget,m_SiliconRevision);
     if(Status!=STATUS_SUCCESS || m_PostTarget>=MAX_CHILDREN){RecordStart(7,Status,&m_CurrentModes[0].DispInfo);return Status==STATUS_SUCCESS?STATUS_NOT_SUPPORTED:Status;}
     auto& boot=m_CurrentModes[0];
-    Status=PostNative().Start(&m_DeviceInfo,&m_DxgkInterface,&boot.DispInfo,m_PostTarget,TRUE);
+    Status=PostNative().Start(&m_DeviceInfo,&m_DxgkInterface,&boot.DispInfo,m_PostTarget,TRUE,m_SiliconRevision);
     if(Status!=STATUS_SUCCESS){RecordStart(7,Status,&boot.DispInfo);return Status;}
     boot.FrameBuffer.Ptr=PostNative().Framebuffer();
     boot.DispInfo.PhysicAddress=PostNative().Address();
@@ -201,7 +204,7 @@ NTSTATUS BASIC_DISPLAY_DRIVER::StartOutput(ULONG target)
     if(Native(target).Active())return STATUS_SUCCESS;
     auto& mode=m_CurrentModes[SourceForTarget(target)];
     NTSTATUS status=PostNative().SecondaryMode(&mode.DispInfo);
-    if(status==STATUS_SUCCESS)status=Native(target).Start(&m_DeviceInfo,&m_DxgkInterface,&mode.DispInfo,target,FALSE);
+    if(status==STATUS_SUCCESS)status=Native(target).Start(&m_DeviceInfo,&m_DxgkInterface,&mode.DispInfo,target,FALSE,m_SiliconRevision);
     if(status!=STATUS_SUCCESS)return status;
     mode.FrameBuffer.Ptr=Native(target).Framebuffer();
     mode.DispInfo.PhysicAddress=Native(target).Address();

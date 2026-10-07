@@ -9,7 +9,7 @@ public:
     PI5_DISPLAY_HW() {RtlZeroMemory(this,sizeof(*this));}
     static NTSTATUS FindPostPort(const DXGK_DEVICE_INFO *device,const DXGK_DISPLAY_INFORMATION *display,ULONG *port,ULONG revision);
     NTSTATUS Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTERFACE *dxgk,
-                   const DXGK_DISPLAY_INFORMATION *display,ULONG port=0,BOOLEAN ownsPost=TRUE);
+                   const DXGK_DISPLAY_INFORMATION *display,ULONG port,BOOLEAN ownsPost,ULONG revision);
     bool Active() const {return Owned!=0;}
     bool Connected(ULONG port) const {return port<2&&Reg[6+port]&&(Read(6+port,0x1c8)&1)!=0;}
     NTSTATUS SecondaryMode(DXGK_DISPLAY_INFORMATION *display) const;
@@ -96,7 +96,7 @@ private:
     PUCHAR Reg[12];
     const DXGKRNL_INTERFACE *Dxgk;
     HANDLE ClockHandle;
-    ULONG Port,UpmDescriptor,Width,Height,Pitch,OldHead,OwnHead,SavedList[20],ClockMask,Fault;
+    ULONG Port,SiliconRevision,UpmDescriptor,Width,Height,Pitch,OldHead,OwnHead,SavedList[20],ClockMask,Fault;
     BOOLEAN PostOwner;
     ULONG HTotal,VTotal,PixelRate,HsmRate,BvbRate,NativeMaxClock;
     PDMA_ADAPTER Adapter;
