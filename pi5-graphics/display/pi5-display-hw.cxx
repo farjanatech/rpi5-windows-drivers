@@ -22,10 +22,20 @@ NTSTATUS PI5_DISPLAY_HW::FindPostPort(const DXGK_DEVICE_INFO *device,const DXGK_
             if(!hvs)return STATUS_INSUFFICIENT_RESOURCES;
             auto read=[hvs](ULONG offset){return READ_REGISTER_ULONG(reinterpret_cast<PULONG>(hvs+offset));};
             NTSTATUS status=STATUS_DEVICE_CONFIGURATION_ERROR;
+            ULONG version=read(0);
             BddTrace(116,STATUS_SUCCESS,revision,display->PhysicAddress.LowPart);
-            if(read(0)==0x2454)for(ULONG candidate=0;candidate<2;++candidate){
-                ULONG head=read(0x110+candidate*0x40)&0xfff;
-                ULONG active=read(0x11c+candidate*0x40)&0xfff;
+            BddTrace(125,STATUS_SUCCESS,version,version&0xff);
+            const BOOLEAN c1=revision==0;
+            const BOOLEAN d0=revision==1;
+            const BOOLEAN recognized=(d0&&version==0x2454) || (c1&&((version&0xff)==0x53));
+            if(recognized)for(ULONG candidate=0;candidate<2;++candidate){
+                // BCM2712 C0/C1 and D0 place the per-display register blocks
+                // at different offsets. These values come from Raspberry Pi's
+                // upstream vc4 SCALER6/SCALER6D register definitions.
+                ULONG headOffset=c1?(0x3c+candidate*0x20):(0x110+candidate*0x40);
+                ULONG activeOffset=c1?(0x48+candidate*0x20):(0x11c+candidate*0x40);
+                ULONG head=read(headOffset)&0xfff;
+                ULONG active=read(activeOffset)&0xfff;
                 BddTrace(117+candidate*4,STATUS_SUCCESS,head,active);
                 if(head<0x800){
                     ULONG base=0x4000+head*4;
@@ -33,14 +43,17 @@ NTSTATUS PI5_DISPLAY_HW::FindPostPort(const DXGK_DEVICE_INFO *device,const DXGK_
                     BddTrace(119+candidate*4,STATUS_SUCCESS,read(base+20),read(base+24));
                     BddTrace(120+candidate*4,STATUS_SUCCESS,read(base+28),display->Pitch);
                 }
-                // Preserve Damian's existing D0/legacy acceptance rules for now.
-                // The C1 parser will be added only after a real C1 snapshot is
-                // captured, so D0 cannot regress from a guessed compatibility path.
-                if(head>=0x800 || active!=head)continue;
-                ULONG base=0x4000+head*4;
-                if(read(base)!=0x600cc007 || (read(base+20)&15)!=0 || read(base+24)!=display->PhysicAddress.LowPart ||
-                   read(base+28)!=display->Pitch || read(base+12)!=((display->Height-1)<<16 | (display->Width-1)))continue;
-                *port=candidate;status=STATUS_SUCCESS;break;
+                // D0 remains Damian's original strict path.
+                if(d0){
+                    if(head>=0x800 || active!=head)continue;
+                    ULONG base=0x4000+head*4;
+                    if(read(base)!=0x600cc007 || (read(base+20)&15)!=0 || read(base+24)!=display->PhysicAddress.LowPart ||
+                       read(base+28)!=display->Pitch || read(base+12)!=((display->Height-1)<<16 | (display->Width-1)))continue;
+                    *port=candidate;status=STATUS_SUCCESS;break;
+                }
+                // C1 diagnostic build is intentionally read-only. Never hand
+                // control to Start() until the captured C1 raster-list format
+                // has been validated and the full C1 register path is implemented.
             }
             MmUnmapIoSpace(hvs,Sizes[0]);return BddTrace(115,status,status==STATUS_SUCCESS?*port:MAXULONG,display->PhysicAddress.LowPart);
         }

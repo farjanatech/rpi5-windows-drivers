@@ -31,3 +31,10 @@ build. It does not weaken the existing D0 safety checks. The new trace gives us
 the exact live C1 HVS list so the final C1 parser can be implemented safely.
 
 Do not use this package as a production graphics release yet.
+
+Second C1 capture stage:
+- accepts C1 HVS identity (SCALER6_VERSION low byte 0x53) for diagnostics;
+- uses C1 per-display LPTRS/DL offsets (0x3c/0x48, stride 0x20);
+- records HVS VERSION as trace ID 125;
+- never takes ownership of a C1 display in this build;
+- keeps Damian's D0 0x2454 path and validation unchanged.
