@@ -151,3 +151,19 @@ C1 frozen-scanout producer isolation (0.1.0.173):
   ARTIFACT/FROZEN = corruption remains HVS-side despite valid address/list/UPM state.
 - Pi5Render trace 160 marks the first suppressed C1 scanout update.
 - D0 behavior is unchanged.
+C1 CPU-authored frozen pattern isolation (0.1.0.174):
+- Triggered because 0.1.0.173 stayed healthy and produced a pure black, artifact-free
+  physical output while later C1 scanout updates were suppressed.
+- Keeps the 0.1.0.173 frozen C1 present path and all 0.1.0.172 HVS/UPM/address logic.
+- Before HVS takeover, C1 CPU-writes both native scanout buffers with a deterministic
+  black/white pattern: vertical stripes in the top half, 64x64 checkerboard in the
+  bottom half, and a white border. This avoids color-channel ambiguity.
+- D0 behavior is unchanged.
+- New display traces:
+  248 = pattern black/white sentinel values
+  249 = pattern width/height
+- Interpretation:
+  PATTERN_CLEAN = HVS/list/address/UPM/fetch geometry is working for real pixels;
+                  corruption is introduced later by V3D->scanout updates.
+  PATTERN_ARTIFACT = corruption remains HVS-side even with CPU-authored pixels.
+  BLACK = pattern was not visible; inspect visibility/takeover state before concluding.

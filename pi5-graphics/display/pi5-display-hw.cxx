@@ -428,6 +428,27 @@ NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTE
                 for(ULONG x=0;x<Pitch/4;++x)
                     Buffer[1024+SIZE_T(frame)*FrameBytes/4+SIZE_T(y)*Pitch/4+x]=
                         PostBuffer?PostBuffer[SIZE_T(y)*OriginalDisplay.Pitch/4+x]:0;
+        if(c1){
+            // CPU-authored scanout isolation pattern. Keep V3D frozen (0.1.0.173)
+            // and replace the unknown/black startup contents with deterministic
+            // nontrivial pixels before HVS ownership. Black/white content avoids
+            // channel-order ambiguity and directly exercises pitch/fetch geometry.
+            for(ULONG frame=0;frame<FramebufferCount();++frame){
+                volatile ULONG *pixels=Buffer+1024+SIZE_T(frame)*FrameBytes/4;
+                for(ULONG y=0;y<Height;++y){
+                    for(ULONG x=0;x<Width;++x){
+                        const ULONG cell=((x>>6)^(y>>6))&1u;
+                        const ULONG stripe=(x/(max(1u,Width/8u)))&1u;
+                        ULONG value=(y<Height/2)?(stripe?0xffffffffu:0xff000000u)
+                                                 :(cell?0xffffffffu:0xff000000u);
+                        if(y<8 || y+8>=Height || x<8 || x+8>=Width)value=0xffffffffu;
+                        pixels[SIZE_T(y)*Pitch/4+x]=value;
+                    }
+                }
+            }
+            BddTrace(248,STATUS_SUCCESS,0xff000000u,0xffffffffu);
+            BddTrace(249,STATUS_SUCCESS,Width,Height);
+        }
         KeMemoryBarrier();
     }
     {
