@@ -414,8 +414,15 @@ static NTSTATUS APIENTRY Start(PVOID context,DXGK_START_INFO*startInfo,DXGKRNL_I
             s=a->display->Native(port).AttachDirectSegment(a->memory,a->physical,a->memoryBytes);
             if(s!=STATUS_SUCCESS){(void)Stop(a);return Pi5Trace(86,s,port);}
         }
+    }
+    if(a->mmioFlips||a->siliconRevision==0){
+        // D0 needs linear displayables for direct scanout. C1 now needs the
+        // same invariant even though it CPU-copies into a separate native
+        // scanout buffer: a displayable primary must not enter the tiled
+        // shadow/ResolveShadow path before that CPU copy.
         const auto&mode=a->display->GetCurrentMode(a->display->PostSource())->DispInfo;
         a->gpu.linearWidth=mode.Width;a->gpu.linearHeight=mode.Height;a->gpu.linearPitch=mode.Pitch;
+        if(a->siliconRevision==0)Pi5Trace(162,STATUS_SUCCESS,mode.Width,mode.Pitch);
     }
     s=StartHotplug(a);if(s!=STATUS_SUCCESS){(void)Stop(a);return Pi5Trace(150,s);}
 #endif

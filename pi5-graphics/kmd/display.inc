@@ -37,11 +37,21 @@ static NTSTATUS Scanout(Adapter*a,const Reference&r,ULONG interval,bool noWait,U
         // native common-buffer scanout allocation.
         auto&native=a->display->PostNative();ULONG offset=0;BOOLEAN flip=interval!=0;
         NTSTATUS status=native.PrepareScanout(flip,&offset);if(status!=STATUS_SUCCESS)return status;
-        status=a->gpu.SyncShadows(r.offset,r.info.Bytes);if(status!=STATUS_SUCCESS)return status;
+        uint32_t shadow=a->gpu.FindShadow(r.identity,r.offset);
+        if(shadow!=UINT32_MAX){
+            BddTrace(250,STATUS_DEVICE_CONFIGURATION_ERROR,shadow,static_cast<ULONG>(r.offset));
+            return STATUS_DEVICE_CONFIGURATION_ERROR;
+        }
         SIZE_T bytes=SIZE_T(mode.Pitch)*mode.Height;
-        CopyGraphicsMemory(static_cast<PUCHAR>(native.ScanoutMemory())+offset,a->memory+r.offset,bytes);
+        PUCHAR source=a->memory+r.offset;
+        CopyGraphicsMemory(static_cast<PUCHAR>(native.ScanoutMemory())+offset,source,bytes);
         KeMemoryBarrier();
-        if(!(a->scanoutCopies&63u))Pi5Trace(161,STATUS_SUCCESS,offset,static_cast<ULONG>(bytes));
+        if(!a->scanoutCopies){
+            auto pixels=reinterpret_cast<const ULONG*>(source);
+            BddTrace(250,STATUS_SUCCESS,offset,static_cast<ULONG>(bytes));
+            BddTrace(251,STATUS_SUCCESS,pixels[0],pixels[SIZE_T(mode.Height/2)*(mode.Pitch/4)+mode.Width/2]);
+        }
+        if(!(a->scanoutCopies&63u))Pi5Trace(163,STATUS_SUCCESS,offset,static_cast<ULONG>(bytes));
         status=native.Presented(r.info.Width,r.info.Height);if(status!=STATUS_SUCCESS)return status;
         status=native.CommitScanout(offset,static_cast<LONGLONG>(r.offset),flip,noWait,interval,complete?CompleteFlipDma:nullptr,a,fence);if(status!=STATUS_SUCCESS)return status;
         a->displayed=r;++a->scanoutCopies;
@@ -221,7 +231,7 @@ static NTSTATUS APIENTRY FullCommit(HANDLE adapter,const DXGKARG_COMMITVIDPN *re
         auto &displayed=request->AffectedVidPnSourceId?a->secondaryDisplayed:a->displayed;
         primary={};primary.offset=MAXULONGLONG;displayed=primary;UnlockPrimary(a);
         const auto&mode=a->display->GetCurrentMode(a->display->PostSource())->DispInfo;
-        if(a->mmioFlips){a->gpu.linearWidth=mode.Width;a->gpu.linearHeight=mode.Height;a->gpu.linearPitch=mode.Pitch;}
+        if(a->mmioFlips||a->siliconRevision==0){a->gpu.linearWidth=mode.Width;a->gpu.linearHeight=mode.Height;a->gpu.linearPitch=mode.Pitch;}
     }
     UnlockGpu(a);return s;
 }

@@ -182,3 +182,25 @@ C1 CPU-copy live scanout isolation (0.1.0.175):
   DESKTOP_ARTIFACT = corruption survives CPU copy; investigate source allocation
                      contents/format or HVS visibility/coherency after dynamic updates.
   PATTERN_ONLY = Windows did not complete a live CPU scanout update; inspect trace 161.
+C1 linear-primary CPU-copy isolation (0.1.0.176):
+- Triggered because 0.1.0.175 remained healthy but the original visual artifact returned
+  even though V3D CopyScanout() itself was bypassed.
+- 0.1.0.175 still called SyncShadows() before its CPU copy. On C1, linearWidth was zero,
+  so displayable primaries were allowed into the tiled shadow cache; SyncShadows could
+  therefore run ResolveShadow(), which is another V3D CopySurface() operation.
+- C1 now uses the same displayable-primary invariant as D0: mode-sized displayable
+  allocations remain linear in the WDDM segment from startup and after CommitVidPn.
+- C1 CPU scanout no longer calls SyncShadows(). It fails the diagnostic if a matching
+  primary shadow unexpectedly exists, then CPU-copies the linear primary into the
+  proven native common-buffer scanout allocation.
+- D0 direct-MMIO behavior is unchanged.
+- Traces:
+  Pi5Render 162 = C1 linear-primary mode width/pitch established
+  Pi5Render 163 = recurring C1 live CPU-copy scanout offset/bytes
+  Pi5Display 250 = first CPU copy success, or failure with unexpected shadow index
+  Pi5Display 251 = first/center source-pixel samples from the linear primary
+- Interpretation:
+  DESKTOP_CLEAN = tiled displayable-primary shadow/ResolveShadow path was the corruption source.
+  DESKTOP_ARTIFACT = source primary is being corrupted even while forced linear; next inspect
+                     V3D rendering-to-linear versus CPU-authored linear content.
+  PATTERN_ONLY/BLACK = live scanout path did not produce usable primary content; use traces 250/251.
