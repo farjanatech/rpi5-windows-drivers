@@ -21,7 +21,7 @@ struct GpuPath {
     struct CodeEntry {ULONG offset,bytes;};
     CodeEntry batchCode[PI5_MAX_BATCH_DRAWS*3];
     ULONG batchCodeCount;
-    uint32_t textureCursor;
+    uint32_t textureCursor,v3dRevision;
     pi5::TextureView views[PI5_MAX_BATCH_DRAWS*PI5_BINDINGS];
     void ResetBatch();
     bool FitsDraw(const Pi5DrawCommand &draw,const Pi5AllocationInfo *resources,void *const *cpu,const uint64_t *identities);

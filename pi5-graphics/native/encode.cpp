@@ -120,7 +120,7 @@ bool EncodeDrawBatch(const Draw *draws,uint32_t count,uint32_t base,void *buffer
              d.coordinateUniforms && d.vertexUniforms && d.pixelUniforms &&
              !((d.coordinateUniforms | d.vertexUniforms | d.pixelUniforms) & 3),"invalid shader addresses");
         const auto&first=draws[0];
-        Need(d.width==first.width&&d.height==first.height&&d.pitch==first.pitch&&d.tiledRows==first.tiledRows&&d.target==first.target&&d.tile==first.tile&&d.bgra==first.bgra&&d.loadTarget==first.loadTarget&&d.clearColor==first.clearColor,"incompatible batch surfaces");
+        Need(d.width==first.width&&d.height==first.height&&d.pitch==first.pitch&&d.tiledRows==first.tiledRows&&d.target==first.target&&d.tile==first.tile&&d.bgra==first.bgra&&d.loadTarget==first.loadTarget&&d.clearColor==first.clearColor&&d.v3dRevision==first.v3dRevision,"incompatible batch surfaces");
     }
     {const auto&d=draws[0];
         uint32_t tilesX = (d.width + TileWidth-1) / TileWidth, tilesY = (d.height + TileHeight-1) / TileHeight;
@@ -151,7 +151,22 @@ bool EncodeDrawBatch(const Draw *draws,uint32_t count,uint32_t base,void *buffer
         uint32_t records[PI5_MAX_BATCH_DRAWS]={};
         for(uint32_t n=0;n<count;++n){const auto&item=draws[n];
         w.Align(32);records[n] = w.Address(base);
-        w.Begin(0,32);w.Bits(1,1,1);w.Bits(13,1,1);w.Bits(21,1,1);w.Bits(15,1,item.varyingScalars!=0);w.Bits(24,8,item.varyingScalars);
+        w.Begin(0,32);w.Bits(1,1,1);
+        if(item.v3dRevision>=10){
+            // V3D 7.1.10 / BCM2712 D0: GL_SHADER_STATE_RECORD_DRAW_INDEX.
+            // Preserve Damian's original bit layout byte-for-byte.
+            w.Bits(13,1,1);                              // turn_off_early_z_test
+            w.Bits(21,1,1);                              // disable_implicit_point_line_varyings
+            w.Bits(15,1,item.varyingScalars!=0);          // real pixel-centre W
+        }else{
+            // V3D 7.1.6 / BCM2712 C1: original GL_SHADER_STATE_RECORD.
+            // 7.1.10 inserted draw-index/base-vertex fields and moved these
+            // same semantics within the first three bytes.
+            w.Bits(9,1,1);                               // turn_off_early_z_test
+            w.Bits(18,1,1);                              // disable_implicit_point_line_varyings
+            w.Bits(12,1,item.varyingScalars!=0);          // real pixel-centre W
+        }
+        w.Bits(24,8,item.varyingScalars);
         w.Bits(32,4,((item.vertexScalars>6?item.vertexScalars:6)+7)/8);w.Bits(48,4,((item.vertexScalars>4+item.varyingScalars?item.vertexScalars:4+item.varyingScalars)+7)/8);
         w.Bits(64,32,item.pixelCode | ((item.fourThreadMask>>2)&1));w.Bits(96,32,item.pixelUniforms);
         w.Bits(128,32,item.vertexCode | ((item.fourThreadMask>>1)&1));w.Bits(160,32,item.vertexUniforms);

@@ -110,6 +110,9 @@ NTSTATUS GpuPath::Start(PUCHAR memory,ULONG bytes){
 #endif
     TRY(Io(IOCTL_PI5_V3D_QUERY,nullptr,0,&status,sizeof(status)));
     if(status.TechVersion!=71)return STATUS_NOT_SUPPORTED;
+    v3dRevision=(status.HubIdent[3]>>8)&255u;
+    if(!v3dRevision)return STATUS_DEVICE_PROTOCOL_ERROR;
+    Pi5Trace(164,STATUS_SUCCESS,status.TechVersion,v3dRevision);
     TRY(Buffer(&code,PI5_UMD_COMMAND_BYTES,FALSE));TRY(Buffer(&uniform,131072,FALSE));TRY(Buffer(&cl,PI5_UMD_COMMAND_BYTES,FALSE));
     codeStaging=static_cast<PUCHAR>(Allocate(code.Bytes));uniformStaging=static_cast<PUCHAR>(Allocate(uniform.Bytes));
     if(!codeStaging||!uniformStaging)return STATUS_INSUFFICIENT_RESOURCES;
@@ -312,7 +315,7 @@ NTSTATUS GpuPath::PrepareDraw(const Pi5DrawCommand&command,const Pi5AllocationIn
             }
             if(uniformBytes)RtlCopyMemory(uniformStaging+uniformUsed,commands,uniformBytes);
             if(descriptorBytes)RtlCopyMemory(uniformStaging+PI5_UNIFORM_DESCRIPTORS+batchCount*(PI5_BINDINGS+3)*64,commands+PI5_UNIFORM_DESCRIPTORS,descriptorBytes);
-            draw.vertexAddress=addresses[1]+c->VertexOffset;draw.vertexStride=c->VertexStride;draw.vertexCount=c->VertexCount;draw.vertexScalars=c->VertexComponents;draw.varyingScalars=c->VaryingScalars;draw.nonPerspectiveMask=c->NonPerspectiveMask;draw.flatMask=c->FlatMask;draw.pipeline=c->Pipeline;if(!opaqueLoads){draw.pipeline.Flags&=~PI5_PIPELINE_COVERAGE;RtlZeroMemory(draw.pipeline.Coverage,sizeof(draw.pipeline.Coverage));}draw.loadTarget=true;
+            draw.vertexAddress=addresses[1]+c->VertexOffset;draw.vertexStride=c->VertexStride;draw.vertexCount=c->VertexCount;draw.vertexScalars=c->VertexComponents;draw.varyingScalars=c->VaryingScalars;draw.nonPerspectiveMask=c->NonPerspectiveMask;draw.flatMask=c->FlatMask;draw.v3dRevision=v3dRevision;draw.pipeline=c->Pipeline;if(!opaqueLoads){draw.pipeline.Flags&=~PI5_PIPELINE_COVERAGE;RtlZeroMemory(draw.pipeline.Coverage,sizeof(draw.pipeline.Coverage));}draw.loadTarget=true;
             RtlCopyMemory(draw.viewport,c->Viewport,sizeof(draw.viewport));
             uniformUsed+=uniformBytes;++batchCount;return STATUS_SUCCESS;
 }

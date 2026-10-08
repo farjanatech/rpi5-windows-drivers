@@ -241,3 +241,20 @@ C1 final bounded isolation (0.1.0.178):
   DESKTOP_ARTIFACT with trace254 success => HVS and CPU copy are faithful; the Windows
   primary itself is already corrupted by V3D rendering. Stop reboot experiments and
   debug the render path offline.
+
+C1 V3D shader-record revision fix (0.1.0.179):
+- Offline analysis after the final 0.1.0.178 test proved the CPU-visible Windows
+  primary already contains the artifact before presentation.
+- Public Raspberry Pi/Mesa data identifies early Pi 5 C1 as V3D 7.1.6 and
+  BCM2712 D0 as V3D 7.1.10. V3D 7.1.10 inserted draw-index/base-vertex fields
+  and shuffled the first three bytes of GL_SHADER_STATE_RECORD.
+- Damian's hand-written record uses the 7.1.10/D0 positions. The KMD now reads
+  the V3D IP revision from the already-exposed HUB IDENT3 status and selects
+  the correct header layout at runtime.
+- For revision >=10, Damian's original D0 bit writes are preserved exactly:
+  early-Z bit 13, real-pixel-centre bit 15, implicit-varyings bit 21.
+- For revision <10, the same semantics use the original 7.1.x/C1 positions:
+  early-Z bit 9, real-pixel-centre bit 12, implicit-varyings bit 18.
+- VPM sizes, shader/uniform addresses, tile packets, HVS/display code, and D0
+  presentation behavior are unchanged.
+- Pi5Render trace 164 records TechVersion / V3D IP revision at startup.

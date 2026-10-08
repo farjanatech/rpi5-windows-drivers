@@ -14,6 +14,10 @@ struct Draw {
     uint32_t vertexScalars=4;
     // Bit 0 coordinate, 1 vertex, 2 pixel: the program uses only rf0-rf31 and may run 4-way threaded.
     uint32_t fourThreadMask=7;
+    // V3D 7.1 IP revision. 7.1.10 (BCM2712 D0) added draw-index/base-vertex
+    // fields and shuffled the first three bytes of the shader-state record.
+    // Default 10 preserves Damian's D0 encoding for all non-KMD/native callers.
+    uint32_t v3dRevision=10;
     // Raw IEEE floats: top-left x/y, width/height. All zero selects the surface.
     uint32_t viewport[4]={};
     bool loadTarget = false, bgra = false;
