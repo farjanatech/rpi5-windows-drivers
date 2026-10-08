@@ -58,6 +58,7 @@ struct Adapter {
     Reference secondaryPrimary,secondaryDisplayed;
     ULONG primaryFlags,primaryCalls,scanoutCopies;
     volatile LONG primaryPending,releasePost;
+    ULONG siliconRevision;
     BOOLEAN asyncFlips,mmioFlips;
 #endif
     DXGKRNL_INTERFACE dxgk;
@@ -356,6 +357,7 @@ static NTSTATUS APIENTRY Add(DEVICE_OBJECT*pdo,PVOID *out){auto a=static_cast<Ad
 #endif
 #ifdef PI5_FULL_DISPLAY
     ULONG silicon=MAXULONG;NTSTATUS siliconStatus=Pi5EvalAcpiInteger(pdo,"_HRV",&silicon);
+    a->siliconRevision=NT_SUCCESS(siliconStatus)?silicon:MAXULONG;
     a->gpu.opaqueLoads=ConsumeFlipTrial(L"OpaqueLoads",TRUE);
     // C1 primary takeover itself is stable, but direct HVS scanout from the
     // GPU segment produced visible corruption on real C1 hardware with

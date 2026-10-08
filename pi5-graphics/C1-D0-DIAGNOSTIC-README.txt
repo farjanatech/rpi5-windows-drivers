@@ -136,4 +136,18 @@ C1 HVS physical-address diagnostic (0.1.0.172):
   245 = CPU physical scanout last-page low/high
   246 = physical-contiguity mismatch count / first mismatching page index
   247 = scanout page count / 1 if logical start equals physical start, else 0
-
+C1 frozen-scanout producer isolation (0.1.0.173):
+- Triggered because 0.1.0.172 proved the HAL DMA scanout address equals the real
+  CPU physical address and all 16384 scanout pages are physically contiguous,
+  while the driver remained healthy and the physical HDMI picture remained ARTIFACT.
+- HVS list, address, UPM base/handle/size, copy-scanout allocation and C1 primary-only
+  rules remain unchanged.
+- C1 only: after Start() copies the known-good firmware framebuffer into the native
+  scanout buffer, later Windows scanout presents are acknowledged without executing
+  V3D CopyScanout() or flipping to another buffer.
+- Expected result is a frozen boot/firmware image. This is intentional.
+- Interpretation:
+  CLEAN/FROZEN = HVS path is good; corruption is introduced by V3D->scanout updates.
+  ARTIFACT/FROZEN = corruption remains HVS-side despite valid address/list/UPM state.
+- Pi5Render trace 160 marks the first suppressed C1 scanout update.
+- D0 behavior is unchanged.

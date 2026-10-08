@@ -30,6 +30,17 @@ static NTSTATUS Scanout(Adapter*a,const Reference&r,ULONG interval,bool noWait,U
     const auto &mode=a->display->GetCurrentMode(a->display->PostSource())->DispInfo;
     if(r.info.Width!=mode.Width||r.info.Height!=mode.Height||r.info.Pitch!=mode.Pitch||(r.info.Format!=87&&r.info.Format!=88))return STATUS_NOT_SUPPORTED;
     if(a->mmioFlips){NTSTATUS status=DirectScanout(a,r,0,false,a->display->PostSource());if(status==STATUS_SUCCESS&&interval>1)status=a->display->PostNative().WaitForRefresh(interval-1);return status;}
+    if(a->siliconRevision==0){
+        // C1 isolation diagnostic: Start() already copied the known-good
+        // firmware framebuffer into the native scanout buffer. Keep that
+        // buffer frozen and acknowledge later Windows presents without
+        // allowing V3D to overwrite it. If the physical picture becomes clean,
+        // the remaining corruption is in the V3D->scanout update path rather
+        // than HVS list/address/UPM semantics.
+        if(!a->scanoutCopies)Pi5Trace(160,STATUS_SUCCESS,interval,static_cast<ULONG>(r.offset));
+        a->displayed=r;++a->scanoutCopies;
+        return STATUS_SUCCESS;
+    }
     auto&native=a->display->PostNative();ULONG offset=0;BOOLEAN flip=interval!=0;
     NTSTATUS status=native.PrepareScanout(flip,&offset);if(status!=STATUS_SUCCESS)return status;
     status=a->gpu.CopyScanout(r.offset,mode.Pitch,mode.Height,offset);if(status!=STATUS_SUCCESS)return status;
