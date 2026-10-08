@@ -37,7 +37,7 @@ static NTSTATUS Scanout(Adapter*a,const Reference&r,ULONG interval,bool noWait,U
         // allowing V3D to overwrite it. If the physical picture becomes clean,
         // the remaining corruption is in the V3D->scanout update path rather
         // than HVS list/address/UPM semantics.
-        if(!a->scanoutCopies)Pi5Trace(160,STATUS_SUCCESS,interval,static_cast<ULONG>(r.offset));
+        if(!(a->scanoutCopies&63u))Pi5Trace(160,STATUS_SUCCESS,interval,a->scanoutCopies);
         a->displayed=r;++a->scanoutCopies;
         return STATUS_SUCCESS;
     }
