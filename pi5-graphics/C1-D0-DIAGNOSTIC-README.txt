@@ -123,3 +123,17 @@ C1 pre-OpenMonitor predicate diagnostic (0.1.0.171):
   242 = private-tail sentinel result or first failing index/value
 - A nonzero trace status identifies the first rejected predicate group.
 
+C1 HVS physical-address diagnostic (0.1.0.172):
+- Triggered because 0.1.0.171 reached Status OK / ProblemCode 0, used the expected
+  fresh UPM base/handle/size, had HANDLE_ERROR=BAD_UPM=BAD_AXI=0, but remained visibly ARTIFACT.
+- No scanout-address behavior is changed by this build.
+- C1-only telemetry checks whether the HAL common-buffer DMA address actually equals the
+  CPU physical address required by the HVS, and whether every scanout page is physically contiguous.
+- D0 behavior is unchanged.
+- New traces:
+  243 = HVS-programmed logical/DMA scanout start low/high
+  244 = CPU physical scanout start low/high
+  245 = CPU physical scanout last-page low/high
+  246 = physical-contiguity mismatch count / first mismatching page index
+  247 = scanout page count / 1 if logical start equals physical start, else 0
+

@@ -396,6 +396,30 @@ NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTE
         if(!Buffer)goto Fail;
         s=STATUS_DEVICE_CONFIGURATION_ERROR;
         if(((ULONG_PTR)Buffer&4095) || (Dma.QuadPart&4095) || (ULONGLONG)Dma.QuadPart+BufferBytes>0xa00000000ull)goto Fail;
+        if(c1){
+            // The HVS has no IOMMU. Damian's direct-scanout path therefore
+            // requires the HAL common-buffer DMA address to equal the buffer's
+            // CPU physical address. C1 copy-scanout never checked this.
+            // Measure every scanout page before changing any addressing.
+            PUCHAR cpu=reinterpret_cast<PUCHAR>(const_cast<ULONG*>(Buffer))+4096;
+            const ULONG pages=ScanoutBytes()/4096;
+            const ULONGLONG logical=(ULONGLONG)Dma.QuadPart+4096;
+            const PHYSICAL_ADDRESS first=MmGetPhysicalAddress(cpu);
+            const PHYSICAL_ADDRESS last=MmGetPhysicalAddress(cpu+SIZE_T(pages-1)*4096);
+            ULONG mismatches=0,firstMismatch=MAXULONG;
+            for(ULONG i=0;i<pages;++i){
+                const PHYSICAL_ADDRESS page=MmGetPhysicalAddress(cpu+SIZE_T(i)*4096);
+                if((ULONGLONG)page.QuadPart!=(ULONGLONG)first.QuadPart+ULONGLONG(i)*4096){
+                    if(firstMismatch==MAXULONG)firstMismatch=i;
+                    ++mismatches;
+                }
+            }
+            BddTrace(243,STATUS_SUCCESS,(ULONG)logical,(ULONG)(logical>>32));
+            BddTrace(244,STATUS_SUCCESS,first.LowPart,(ULONG)((ULONGLONG)first.QuadPart>>32));
+            BddTrace(245,STATUS_SUCCESS,last.LowPart,(ULONG)((ULONGLONG)last.QuadPart>>32));
+            BddTrace(246,STATUS_SUCCESS,mismatches,firstMismatch);
+            BddTrace(247,STATUS_SUCCESS,pages,logical==(ULONGLONG)first.QuadPart?1u:0u);
+        }
         for(ULONG i=0;i<BufferBytes/4;++i)Buffer[i]=0x50494744;
         if(PostOwner){PostBuffer=static_cast<volatile ULONG*>(MmMapIoSpaceEx(display->PhysicAddress,OriginalDisplay.Pitch*Height,PAGE_READWRITE|PAGE_WRITECOMBINE));
             s=STATUS_INSUFFICIENT_RESOURCES;if(!PostBuffer)goto Fail;}
