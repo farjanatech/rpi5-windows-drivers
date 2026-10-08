@@ -221,3 +221,23 @@ C1 Damian-reference audit fix (0.1.0.177):
   existing 0xF80 tail contents and only validates bounds/non-overlap.
 - D0 validation, direct-MMIO scanout, raster words, UPM behavior and startup path
   remain Damian-compatible and unchanged.
+C1 final bounded isolation (0.1.0.178):
+- This is the second and final planned reboot experiment after the Damian-reference audit.
+- 0.1.0.177 proved inactive-buffer flips do not remove the artifact.
+- Damian's source keeps displayable primaries linear only on his direct-scanout path.
+  C1 fallback copy-scanout otherwise allows them into the tiled shadow cache.
+- C1 now forces displayable primaries linear at startup and after CommitVidPn.
+- C1 presentation bypasses both tiled-shadow ResolveShadow and V3D CopyScanout:
+  it CPU-copies the linear Windows primary into the inactive native scanout buffer,
+  verifies sparse source/destination hashes match, then publishes the normal HVS flip.
+- Traces:
+  253 = C1 linear-primary width / pitch established
+  254 failure = unexpected primary shadow, or hash mismatch
+  254 success = sparse source/destination hashes match
+  252 = recurring interval / inactive-buffer offset
+- D0 remains unchanged.
+- Interpretation:
+  DESKTOP_CLEAN => tiled-shadow / V3D presentation-copy path is the artifact source.
+  DESKTOP_ARTIFACT with trace254 success => HVS and CPU copy are faithful; the Windows
+  primary itself is already corrupted by V3D rendering. Stop reboot experiments and
+  debug the render path offline.

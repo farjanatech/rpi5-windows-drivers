@@ -414,8 +414,13 @@ static NTSTATUS APIENTRY Start(PVOID context,DXGK_START_INFO*startInfo,DXGKRNL_I
             s=a->display->Native(port).AttachDirectSegment(a->memory,a->physical,a->memoryBytes);
             if(s!=STATUS_SUCCESS){(void)Stop(a);return Pi5Trace(86,s,port);}
         }
+    }
+    if(a->mmioFlips||a->siliconRevision==0){
+        // Damian keeps displayable primaries linear for direct scanout.
+        // C1 copy-scanout needs the same invariant for this final isolation.
         const auto&mode=a->display->GetCurrentMode(a->display->PostSource())->DispInfo;
         a->gpu.linearWidth=mode.Width;a->gpu.linearHeight=mode.Height;a->gpu.linearPitch=mode.Pitch;
+        if(a->siliconRevision==0)BddTrace(253,STATUS_SUCCESS,mode.Width,mode.Pitch);
     }
     s=StartHotplug(a);if(s!=STATUS_SUCCESS){(void)Stop(a);return Pi5Trace(150,s);}
 #endif
