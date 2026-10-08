@@ -204,3 +204,20 @@ C1 linear-primary CPU-copy isolation (0.1.0.176):
   DESKTOP_ARTIFACT = source primary is being corrupted even while forced linear; next inspect
                      V3D rendering-to-linear versus CPU-authored linear content.
   PATTERN_ONLY/BLACK = live scanout path did not produce usable primary content; use traces 250/251.
+C1 Damian-reference audit fix (0.1.0.177):
+- Audited against damian5466/rpi5-windows-drivers add-complete-graphics-release
+  (7e06714c188832a94174ef72a81d51eb0a067bce) and upstream VC6 register/list definitions.
+- Restores the clean 0.1.0.172 C1 copy-scanout architecture; removes the later
+  CPU-pattern, frozen-scanout, CPU-copy, and linear-primary experiments.
+- C1 raster encoding remains VC6C-correct: CTL0 0x4900C007, CTL2 0x4000FFF0.
+- Root-cause candidate from the audit: Damian's normal D0 path is direct scanout,
+  but C1 is forced through the fallback copy path. That path treated interval 0
+  as 'no flip' and overwrote the currently active HVS front buffer while it was
+  being scanned/prefetched. C1 now ALWAYS selects the inactive buffer and performs
+  an HVS flip after the copy, including interval-0 refreshes.
+- Pi5Display trace 252 records C1 interval / back-buffer offset for recurring copies.
+- C1 private-tail startup no longer requires stale 0xB0B0B0B0 sentinels. After
+  proving firmware's active list ends below 0x800, the driver saves/restores the
+  existing 0xF80 tail contents and only validates bounds/non-overlap.
+- D0 validation, direct-MMIO scanout, raster words, UPM behavior and startup path
+  remain Damian-compatible and unchanged.

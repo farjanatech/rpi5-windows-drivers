@@ -54,7 +54,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          Select-String -Path Build\pi5-graphics\pi5graphics.inf -Pattern '0.1.0.176','ACPI\\RPI1001'
+          Select-String -Path Build\pi5-graphics\pi5graphics.inf -Pattern '0.1.0.177','ACPI\\RPI1001'
           foreach($f in @('Pi5Graphics.sys','Pi5GraphicsPower.sys','Pi5D3D.dll','pi5graphics.cat')){if(!(Test-Path (Join-Path 'Build\pi5-graphics' $f))){throw "Missing package file: $f"}}
 
       - name: Assemble diagnostic ZIP
@@ -64,12 +64,12 @@ jobs:
           Copy-Item Build\Farjanatech-RPi5-Damian-Edition-Test.cer Build\pi5-graphics\
           Copy-Item pi5-graphics\Install-Graphics-Diagnostic.ps1 Build\pi5-graphics\
           Copy-Item pi5-graphics\C1-D0-DIAGNOSTIC-README.txt Build\pi5-graphics\
-          $zip='Build\RPi5-Damian-Edition-C1-D0-Graphics-Diagnostic-0.1.0.176.zip'
+          $zip='Build\RPi5-Damian-Edition-C1-D0-Graphics-Diagnostic-0.1.0.177.zip'
           Compress-Archive -Path Build\pi5-graphics\* -DestinationPath $zip -CompressionLevel Optimal -Force
           Get-FileHash $zip -Algorithm SHA256 | Format-List
 
       - uses: actions/upload-artifact@v4
         with:
-          name: RPi5-Damian-Edition-C1-D0-Graphics-Diagnostic-0.1.0.176
-          path: Build/RPi5-Damian-Edition-C1-D0-Graphics-Diagnostic-0.1.0.176.zip
+          name: RPi5-Damian-Edition-C1-D0-Graphics-Diagnostic-0.1.0.177
+          path: Build/RPi5-Damian-Edition-C1-D0-Graphics-Diagnostic-0.1.0.177.zip
           if-no-files-found: error

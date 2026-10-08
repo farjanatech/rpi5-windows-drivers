@@ -297,11 +297,18 @@ NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTE
             p+=32;
         }
         const ULONG tailWords=10*FramebufferCount();
+        // The active firmware list was just proven to terminate below 0x800,
+        // while our private C1 tail starts at 0xF80. Do not require firmware
+        // scratch contents to retain Damian's historical 0xB0 sentinel across
+        // repeated driver install/rollback cycles. Save and restore exactly
+        // what is present instead; only bounds/overlap are ownership facts.
+        if(OwnHead<0x800 || OwnHead+tailWords>cxm){BddTrace(242,STATUS_DEVICE_CONFIGURATION_ERROR,OwnHead,tailWords);goto Fail;}
+        ULONG nonSentinel=0,firstNonSentinel=MAXULONG;
         for(ULONG i=0;i<tailWords;++i){
             SavedList[i]=Read(0,0x4000+(OwnHead+i)*4);
-            if(SavedList[i]!=0xb0b0b0b0){BddTrace(242,STATUS_DEVICE_CONFIGURATION_ERROR,i,SavedList[i]);goto Fail;}
+            if(SavedList[i]!=0xb0b0b0b0){if(firstNonSentinel==MAXULONG)firstNonSentinel=i;++nonSentinel;}
         }
-        BddTrace(242,STATUS_SUCCESS,tailWords,0xb0b0b0b0);
+        BddTrace(242,STATUS_SUCCESS,nonSentinel,firstNonSentinel);
     }else{
         // Preserve Damian's D0 validation path exactly.
         if(Read(0,0)!=expectedVersion || Read(0,4)!=4096 || Read(0,0x0c)<1024 ||
@@ -428,27 +435,6 @@ NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTE
                 for(ULONG x=0;x<Pitch/4;++x)
                     Buffer[1024+SIZE_T(frame)*FrameBytes/4+SIZE_T(y)*Pitch/4+x]=
                         PostBuffer?PostBuffer[SIZE_T(y)*OriginalDisplay.Pitch/4+x]:0;
-        if(c1){
-            // CPU-authored scanout isolation pattern. Keep V3D frozen (0.1.0.173)
-            // and replace the unknown/black startup contents with deterministic
-            // nontrivial pixels before HVS ownership. Black/white content avoids
-            // channel-order ambiguity and directly exercises pitch/fetch geometry.
-            for(ULONG frame=0;frame<FramebufferCount();++frame){
-                volatile ULONG *pixels=Buffer+1024+SIZE_T(frame)*FrameBytes/4;
-                for(ULONG y=0;y<Height;++y){
-                    for(ULONG x=0;x<Width;++x){
-                        const ULONG cell=((x>>6)^(y>>6))&1u;
-                        const ULONG stripe=(x/(max(1u,Width/8u)))&1u;
-                        ULONG value=(y<Height/2)?(stripe?0xffffffffu:0xff000000u)
-                                                 :(cell?0xffffffffu:0xff000000u);
-                        if(y<8 || y+8>=Height || x<8 || x+8>=Width)value=0xffffffffu;
-                        pixels[SIZE_T(y)*Pitch/4+x]=value;
-                    }
-                }
-            }
-            BddTrace(248,STATUS_SUCCESS,0xff000000u,0xffffffffu);
-            BddTrace(249,STATUS_SUCCESS,Width,Height);
-        }
         KeMemoryBarrier();
     }
     {
