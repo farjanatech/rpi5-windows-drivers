@@ -167,3 +167,18 @@ C1 CPU-authored frozen pattern isolation (0.1.0.174):
                   corruption is introduced later by V3D->scanout updates.
   PATTERN_ARTIFACT = corruption remains HVS-side even with CPU-authored pixels.
   BLACK = pattern was not visible; inspect visibility/takeover state before concluding.
+C1 CPU-copy live scanout isolation (0.1.0.175):
+- Triggered because 0.1.0.174 visibly displayed the CPU-authored black/white
+  pattern while the driver remained healthy and all HVS address/UPM/fault
+  telemetry stayed valid.
+- Keeps the 0.1.0.174 HVS/list/address/UPM setup and C1 primary-only rules.
+- C1 only: before each scanout update, resolve any dirty render shadow back
+  into the WDDM segment, then CPU-copy the primary allocation into the native
+  common-buffer scanout allocation. V3D CopyScanout() is bypassed.
+- D0 behavior is unchanged.
+- Pi5Render trace 161 records the destination scanout offset and CPU-copy byte count.
+- Interpretation:
+  DESKTOP_CLEAN = V3D CopyScanout/update path is the corruption source.
+  DESKTOP_ARTIFACT = corruption survives CPU copy; investigate source allocation
+                     contents/format or HVS visibility/coherency after dynamic updates.
+  PATTERN_ONLY = Windows did not complete a live CPU scanout update; inspect trace 161.

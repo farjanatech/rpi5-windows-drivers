@@ -31,13 +31,19 @@ static NTSTATUS Scanout(Adapter*a,const Reference&r,ULONG interval,bool noWait,U
     if(r.info.Width!=mode.Width||r.info.Height!=mode.Height||r.info.Pitch!=mode.Pitch||(r.info.Format!=87&&r.info.Format!=88))return STATUS_NOT_SUPPORTED;
     if(a->mmioFlips){NTSTATUS status=DirectScanout(a,r,0,false,a->display->PostSource());if(status==STATUS_SUCCESS&&interval>1)status=a->display->PostNative().WaitForRefresh(interval-1);return status;}
     if(a->siliconRevision==0){
-        // C1 isolation diagnostic: Start() already copied the known-good
-        // firmware framebuffer into the native scanout buffer. Keep that
-        // buffer frozen and acknowledge later Windows presents without
-        // allowing V3D to overwrite it. If the physical picture becomes clean,
-        // the remaining corruption is in the V3D->scanout update path rather
-        // than HVS list/address/UPM semantics.
-        if(!(a->scanoutCopies&63u))Pi5Trace(160,STATUS_SUCCESS,interval,a->scanoutCopies);
+        // C1 CPU-copy isolation: keep the proven HVS/list/address/UPM path,
+        // but bypass V3D CopyScanout(). Resolve any tiled render shadow back
+        // into the WDDM segment, then CPU-copy the real primary into the
+        // native common-buffer scanout allocation.
+        auto&native=a->display->PostNative();ULONG offset=0;BOOLEAN flip=interval!=0;
+        NTSTATUS status=native.PrepareScanout(flip,&offset);if(status!=STATUS_SUCCESS)return status;
+        status=a->gpu.SyncShadows(r.offset,r.info.Bytes);if(status!=STATUS_SUCCESS)return status;
+        SIZE_T bytes=SIZE_T(mode.Pitch)*mode.Height;
+        CopyGraphicsMemory(static_cast<PUCHAR>(native.ScanoutMemory())+offset,a->memory+r.offset,bytes);
+        KeMemoryBarrier();
+        if(!(a->scanoutCopies&63u))Pi5Trace(161,STATUS_SUCCESS,offset,static_cast<ULONG>(bytes));
+        status=native.Presented(r.info.Width,r.info.Height);if(status!=STATUS_SUCCESS)return status;
+        status=native.CommitScanout(offset,static_cast<LONGLONG>(r.offset),flip,noWait,interval,complete?CompleteFlipDma:nullptr,a,fence);if(status!=STATUS_SUCCESS)return status;
         a->displayed=r;++a->scanoutCopies;
         return STATUS_SUCCESS;
     }
