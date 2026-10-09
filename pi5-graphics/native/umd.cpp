@@ -723,9 +723,9 @@ static void DrawVertices(Device*d,const std::vector<UINT>&order,UINT instances,U
         for(UINT i=0;i<resourceCount;++i)LogCritical("  allocation %u dim=%u %ux%u pitch=%u format=%u levels=%u bytes=%u bind=%x misc=%x\n",i,infos[i].Dimension,infos[i].Width,infos[i].Height,infos[i].Pitch,infos[i].Format,infos[i].Levels,infos[i].Bytes,infos[i].BindFlags,infos[i].MiscFlags);
         for(UINT k=0;k<c.BindingCount;++k){const auto&x=c.Bindings[k];LogCritical("  binding %u kind=%u allocation=%u first=%u count=%u filter=%u border=%u lod=%u-%u\n",k,x.Kind,x.Allocation,x.First,x.Count,x.Filter,x.AddressModes,x.MinLod,x.MaxLod);}
         const Pi5Program*programs[]={&c.Coordinate,&c.Vertex,&c.Pixel};
-        for(UINT i=0;i<3;++i){const auto&p=*programs[i];uint32_t registers=0;
+        for(UINT i=0;i<3;++i){const auto&p=*programs[i];uint64_t registers=0;
             bool valid=ValidateProgram(reinterpret_cast<const uint64_t*>(packet.data()+p.CodeOffset),p.CodeCount,reinterpret_cast<const uint32_t*>(packet.data()+p.UniformOffset),p.UniformCount,DrawProgramRules(c,i),nullptr,&registers);
-            LogCritical("  program %u code=%u uniforms=%u constants=%u valid=%u registers=%08x\n",i,p.CodeCount,p.UniformCount,p.ConstantWords,valid,registers);}
+            LogCritical("  program %u code=%u uniforms=%u constants=%u valid=%u registers=%016llx\n",i,p.CodeCount,p.UniformCount,p.ConstantWords,valid,static_cast<unsigned long long>(registers));}
         if(!diagnosticReason[0])SetDiagnosticReason("Explicit DXGI_DDI_ERR_UNSUPPORTED throw");throw ErrorCode{DXGI_DDI_ERR_UNSUPPORTED};
     }
 #endif
