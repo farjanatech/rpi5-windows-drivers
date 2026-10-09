@@ -929,7 +929,8 @@ Shader Compiler::Emit() {
             if(allowed[i]&&first.valid)for(size_t j=i+1;j<result.code.size()&&j<=i+8;){
                 auto candidate=qpu::Decode(result.code[j]);if(!allowed[j]||!candidate.valid)break;
                 bool ready=true;for(size_t k=i+1;k<j;++k){auto prior=qpu::Decode(result.code[k]);
-                    if((candidate.writes&(prior.reads|prior.writes))||(candidate.reads&prior.writes)){ready=false;break;}}
+                    if((candidate.writes&(prior.reads|prior.writes))||(candidate.reads&prior.writes)||
+                       (candidate.uniformFifo&&prior.uniformFifo)){ready=false;break;}}
                 if(ready&&qpu::Merge(first,candidate)){result.code.erase(result.code.begin()+j);allowed.erase(allowed.begin()+j);continue;}
                 ++j;
             }
