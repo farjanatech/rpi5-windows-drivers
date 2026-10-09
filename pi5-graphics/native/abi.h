@@ -12,6 +12,10 @@
 #define PI5_MAX_BATCH_DRAWS 32u
 #define PI5_MAX_REFERENCES 32u
 #define PI5_MAX_LEVELS 13u
+// This compiler keeps live vertex inputs in the 32-register QPU bank.
+// V3D 7.1 can expose more attributes, but 32 scalar inputs are the safe
+// implementation limit until the UMD grows vertex-input spilling.
+#define PI5_MAX_VERTEX_SCALARS 32u
 // One flat-shade or non-perspective flags packet covers 24 varyings.
 #define PI5_MAX_VARYINGS 24u
 #define PI5_MAX_PROGRAM_WORDS 32768u
