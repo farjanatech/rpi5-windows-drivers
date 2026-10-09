@@ -64,12 +64,50 @@ static int test_revision(uint32_t revision, uint8_t e0, uint8_t e1, uint8_t e2)
     return 3;
 }
 
+
+static int test_vertex_scalars(uint32_t scalars, bool expected)
+{
+    uint8_t storage[256 * 1024] = {};
+    pi5::Draw d = {};
+    d.width = 64;
+    d.height = 64;
+    d.pitch = 64 * 4;
+    d.target = 0x00200000;
+    d.tile = 0x00300000;
+    d.coordinateCode = 0x00400000;
+    d.vertexCode = 0x00500000;
+    d.pixelCode = 0x00600000;
+    d.coordinateUniforms = 0x00700000;
+    d.vertexUniforms = 0x00710000;
+    d.pixelUniforms = 0x00720000;
+    d.vertexAddress = 0x00800000;
+    d.vertexStride = scalars * 4;
+    d.vertexCount = 3;
+    d.vertexScalars = scalars;
+    d.varyingScalars = 0;
+    d.v3dRevision = 6;
+
+    pi5::EncodedCommands out = {};
+    const char *error = nullptr;
+    bool ok = pi5::EncodeDrawBatch(&d, 1, 0x00100000, storage, sizeof(storage), out, error);
+    if (ok != expected) {
+        std::printf("FAIL vertex scalars %u: ok=%u expected=%u error=%s\n",
+                    scalars, ok ? 1u : 0u, expected ? 1u : 0u, error ? error : "<none>");
+        return 1;
+    }
+    std::printf("PASS vertex scalars %u: %s\n", scalars, ok ? "accepted" : "rejected as expected");
+    return 0;
+}
+
 int main()
 {
     if (test_revision(6,  0x02, 0x12, 0x04)) return 1;
     if (test_revision(9,  0x02, 0x12, 0x04)) return 1;
     if (test_revision(10, 0x02, 0xA0, 0x20)) return 1;
     if (test_revision(11, 0x02, 0xA0, 0x20)) return 1;
+    if (test_vertex_scalars(17, true)) return 1;
+    if (test_vertex_scalars(32, true)) return 1;
+    if (test_vertex_scalars(33, false)) return 1;
 
     pi5::Draw defaults = {};
     if (defaults.v3dRevision != 10) {
