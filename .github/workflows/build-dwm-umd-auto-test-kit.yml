@@ -1,9 +1,9 @@
-name: Build DWM UMD Auto Install Test Kit v1
+name: Build DWM UMD Draw Reason Auto Test Kit v2
 
 on:
   push:
     branches:
-      - dwm-umd-auto-test-kit-v1
+      - dwm-umd-draw-reason-diag-v2
     paths:
       - 'pi5-graphics/**'
       - 'tools/dwm-umd-auto-test-kit/**'
@@ -31,7 +31,7 @@ jobs:
           python pi5-graphics/tests/check-universal-invariants.py
           if($LASTEXITCODE){throw 'Universal source invariant check failed'}
           $umd=Get-Content pi5-graphics/native/umd.cpp -Raw
-          foreach($needle in @('PersistFirstFatal','RecordCall','umd-first-fatal-','unsupported-dxgi')){
+          foreach($needle in @('PersistFirstFatal','RecordCall','umd-first-fatal-','unsupported-dxgi','RequireDiagnostic','diagnosticReason')){
             if($umd -notmatch [regex]::Escape($needle)){throw "Missing UMD diagnostic invariant: $needle"}
           }
 
@@ -98,7 +98,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          $root='Build\RPi5-DWM-UMD-Auto-Install-Test-Kit-v1.0'
+          $root='Build\RPi5-DWM-UMD-Draw-Reason-Test-Kit-v2.0'
           $payload=Join-Path $root 'Payload\Graphics'
           New-Item $root,$payload -ItemType Directory -Force | Out-Null
 
@@ -109,25 +109,25 @@ jobs:
           Copy-Item Build\Farjanatech-RPi5-DWM-UMD-Diagnostic-Test.cer $payload -Force
 
           @(
-            'RPi5 DWM UMD Auto Install Test Kit v1.0',
+            'RPi5 DWM UMD Draw Reason Test Kit v2.0',
             ('Branch: '+$env:GITHUB_REF_NAME),
             ('Commit: '+$env:GITHUB_SHA),
             'Universal Graphics base: c4d7a9feaeaa99f032547e33462ad056a4508c14',
             'Graphics product-code delta: pi5-graphics/native/umd.cpp + umd.h only.',
             'Build configuration: Release ARM64',
-            'Automatic flow: install -> reboot -> record -> open Date & time -> finalize -> exact-INF rollback -> verify.'
+            'Diagnostic delta: exact failed Require expression/source line or shader compiler reason is persisted before DWM exits.',\n            'Automatic flow: install -> reboot -> record -> open Date & time -> finalize -> exact-INF rollback -> verify.'
           ) | Set-Content (Join-Path $root 'BUILD-PROVENANCE.txt') -Encoding UTF8
 
           Get-ChildItem $root -Recurse -File | Sort-Object FullName | ForEach-Object {
             '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),($_.FullName.Substring((Resolve-Path $root).Path.Length+1).Replace('\','/'))
           } | Set-Content (Join-Path $root 'SHA256SUMS.txt') -Encoding ASCII
 
-          $zip='Build\RPi5-DWM-UMD-Auto-Install-Test-Kit-v1.0.zip'
+          $zip='Build\RPi5-DWM-UMD-Draw-Reason-Test-Kit-v2.0.zip'
           Compress-Archive -Path "$root\*" -DestinationPath $zip -CompressionLevel Optimal -Force
           Get-FileHash $zip -Algorithm SHA256 | Format-List
 
       - uses: actions/upload-artifact@v4
         with:
-          name: RPi5-DWM-UMD-Auto-Install-Test-Kit-v1.0
-          path: Build/RPi5-DWM-UMD-Auto-Install-Test-Kit-v1.0.zip
+          name: RPi5-DWM-UMD-Draw-Reason-Test-Kit-v2.0
+          path: Build/RPi5-DWM-UMD-Draw-Reason-Test-Kit-v2.0.zip
           if-no-files-found: error
