@@ -294,11 +294,12 @@ NTSTATUS GpuPath::PrepareDraw(const Pi5DrawCommand&command,const Pi5AllocationIn
             TRY(Bindings(*c,r,cpu,identities));ULONG descriptorBytes=c->BindingCount*64;
             draw.fourThreadMask=0;
             for(unsigned i=0;i<3;++i){
-                pi5::TexturePatches patches;const auto*program=p[i];
-                if(!programCache->Validate(reinterpret_cast<const uint64_t*>(static_cast<const UCHAR*>(data)+program->CodeOffset),program->CodeCount,reinterpret_cast<const uint32_t*>(static_cast<const UCHAR*>(data)+program->UniformOffset),program->UniformCount,pi5::DrawProgramRules(*c,i),&patches))return STATUS_INVALID_PARAMETER;
-                // V3D 7.1 has 32 physical registers per four-way thread.
-                // Validation restricts every program to RF0 through RF31.
-                draw.fourThreadMask|=1u<<i;
+                pi5::TexturePatches patches;const auto*program=p[i];uint64_t registers=0;
+                if(!programCache->Validate(reinterpret_cast<const uint64_t*>(static_cast<const UCHAR*>(data)+program->CodeOffset),program->CodeCount,reinterpret_cast<const uint32_t*>(static_cast<const UCHAR*>(data)+program->UniformOffset),program->UniformCount,pi5::DrawProgramRules(*c,i),&patches,&registers))return STATUS_INVALID_PARAMETER;
+                // V3D 7.1 exposes 32 physical registers in 4-thread mode and
+                // 64 in 2-thread mode. Use the fast 4-thread bit only when the
+                // validated program stays entirely within RF0-RF31.
+                if(!(registers&UINT64_C(0xffffffff00000000)))draw.fourThreadMask|=1u<<i;
                 if(!program->ConstantWords&&!patches.count)continue;
                 ULONG descriptor=PI5_UNIFORM_DESCRIPTORS+(PI5_BINDINGS+i)*64,sampler=descriptor+32;
                 if(program->ConstantWords){uint32_t packed=0;
