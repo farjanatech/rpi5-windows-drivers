@@ -1,9 +1,9 @@
-name: Build DWM Varying32 SQRT Fix Auto Test Kit v4
+name: Build DWM EXP LOG Fix Auto Test Kit v5
 
 on:
   push:
     branches:
-      - dwm-varying32-sqrt-fix-v4
+      - dwm-exp-log-fix-v5
     paths:
       - 'pi5-graphics/**'
       - 'tools/dwm-umd-auto-test-kit/**'
@@ -53,6 +53,9 @@ jobs:
           if($encoder -notmatch 'VaryingFlags' -or $encoder -notmatch 'PI5_VARYING_FLAG_CHUNK'){throw 'Multi-packet varying flags are missing'}
           $shader=Get-Content pi5-graphics/native/shader.cpp -Raw
           if($shader -notmatch 'op == 75' -or $shader -notmatch 'Op::Rsqrt'){throw 'DXBC SQRT lowering is missing'}
+          if($shader -notmatch 'op == 25' -or $shader -notmatch 'Op::Exp'){throw 'DXBC EXP lowering is missing'}
+          if($shader -notmatch 'op == 47' -or $shader -notmatch 'Op::Log'){throw 'DXBC LOG lowering is missing'}
+          if($validator -notmatch 'b!=34' -or $validator -notmatch 'b!=35'){throw 'EXP/LOG SFU selectors are not validated'}
 
       - name: Parse automatic test PowerShell
         shell: pwsh
@@ -117,7 +120,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          $root='Build\RPi5-DWM-Varying32-SQRT-Fix-Test-Kit-v4.0'
+          $root='Build\RPi5-DWM-EXP-LOG-Fix-Test-Kit-v5.0'
           $payload=Join-Path $root 'Payload\Graphics'
           New-Item $root,$payload -ItemType Directory -Force | Out-Null
 
@@ -128,15 +131,15 @@ jobs:
           Copy-Item Build\Farjanatech-RPi5-DWM-UMD-Diagnostic-Test.cer $payload -Force
 
           @(
-            'RPi5 DWM Varying32 SQRT Fix Test Kit v4.0',
+            'RPi5 DWM EXP LOG Fix Test Kit v5.0',
             ('Branch: '+$env:GITHUB_REF_NAME),
             ('Commit: '+$env:GITHUB_SHA),
             'Universal Graphics base: c4d7a9feaeaa99f032547e33462ad056a4508c14',
-            'Prior fix retained: vertex inputs support 32 scalar components.',
-            'v3 evidence: 947/1036 fatals moved to pixel varying scalar limit; 89/1036 moved to unsupported DXBC opcode 75 (SQRT).',
-            'Fix: support 32 pixel varying scalars with multiple 24-varying V3D flag packets.',
-            'Fix: lower DXBC SQRT through V3D RSQ followed by reciprocal.',
-            'First-fatal diagnostics remain enabled to expose any next unsupported operation.',
+            'Prior fixes retained: 32 vertex-input scalars, 32 pixel varyings, and DXBC SQRT.',
+            'v4 evidence: prior varying/SQRT failures are gone; 1034/1036 fatals are pixel shader 0x9b3b2768 rejected at DXBC opcode 47 (LOG).',
+            'Fix: lower DXBC LOG to the native V3D LOG SFU and DXBC EXP to the paired V3D EXP SFU.',
+            'Two rare linked-vertex uniform-register-pressure failures remain diagnostic-only for this iteration.',
+            'First-fatal diagnostics remain enabled to expose the next blocker.',
             'Build configuration: Release ARM64',
             'Automatic flow: install -> reboot -> record -> open Date & time -> finalize -> exact-INF rollback -> verify.'
           ) | Set-Content (Join-Path $root 'BUILD-PROVENANCE.txt') -Encoding UTF8
@@ -145,12 +148,12 @@ jobs:
             '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),($_.FullName.Substring((Resolve-Path $root).Path.Length+1).Replace('\','/'))
           } | Set-Content (Join-Path $root 'SHA256SUMS.txt') -Encoding ASCII
 
-          $zip='Build\RPi5-DWM-Varying32-SQRT-Fix-Test-Kit-v4.0.zip'
+          $zip='Build\RPi5-DWM-EXP-LOG-Fix-Test-Kit-v5.0.zip'
           Compress-Archive -Path "$root\*" -DestinationPath $zip -CompressionLevel Optimal -Force
           Get-FileHash $zip -Algorithm SHA256 | Format-List
 
       - uses: actions/upload-artifact@v4
         with:
-          name: RPi5-DWM-Varying32-SQRT-Fix-Test-Kit-v4.0
-          path: Build/RPi5-DWM-Varying32-SQRT-Fix-Test-Kit-v4.0.zip
+          name: RPi5-DWM-EXP-LOG-Fix-Test-Kit-v5.0
+          path: Build/RPi5-DWM-EXP-LOG-Fix-Test-Kit-v5.0.zip
           if-no-files-found: error
