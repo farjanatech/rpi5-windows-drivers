@@ -5,6 +5,7 @@
 #include <cstring>
 #include <string>
 #include "../native/shader.h"
+#include "../native/validate.h"
 
 static uint32_t word(const uint8_t *p)
 {
@@ -77,17 +78,28 @@ static int compile_shader(const char *source, uint32_t requiredOpcode, uint32_t 
 static int compile_vertex_pressure_shader()
 {
     const char *source =
-        "cbuffer C : register(b0) { float4 k; };"
+        "cbuffer C : register(b0) { float4 k[8]; };"
         "struct I {"
         " float4 a0:TEXCOORD0; float4 a1:TEXCOORD1; float4 a2:TEXCOORD2; float4 a3:TEXCOORD3;"
         " float4 a4:TEXCOORD4; float4 a5:TEXCOORD5; float4 a6:TEXCOORD6; float4 a7:TEXCOORD7;"
         "};"
-        "struct O { float4 pos:SV_Position; float4 t:TEXCOORD0; };"
+        "struct O {"
+        " float4 pos:SV_Position;"
+        " float4 o0:TEXCOORD0; float4 o1:TEXCOORD1; float4 o2:TEXCOORD2; float4 o3:TEXCOORD3;"
+        " float4 o4:TEXCOORD4; float4 o5:TEXCOORD5; float4 o6:TEXCOORD6; float4 o7:TEXCOORD7;"
+        "};"
         "O main(I i) {"
         " O o;"
-        " float4 s=i.a0+i.a1+i.a2+i.a3+i.a4+i.a5+i.a6+i.a7+k;"
-        " o.pos=float4(s.xy,0.0,1.0);"
-        " o.t=s;"
+        " float4 t0=i.a0+k[0]; float4 t1=i.a1+k[1];"
+        " float4 t2=i.a2+k[2]; float4 t3=i.a3+k[3];"
+        " float4 t4=i.a4+k[4]; float4 t5=i.a5+k[5];"
+        " float4 t6=i.a6+k[6]; float4 t7=i.a7+k[7];"
+        " float4 sum=t0+t1+t2+t3+t4+t5+t6+t7;"
+        " o.pos=float4(sum.xy,0.0,1.0);"
+        " o.o0=t0+sum*0.001; o.o1=t1+sum*0.002;"
+        " o.o2=t2+sum*0.003; o.o3=t3+sum*0.004;"
+        " o.o4=t4+sum*0.005; o.o5=t5+sum*0.006;"
+        " o.o6=t6+sum*0.007; o.o7=t7+sum*0.008;"
         " return o;"
         "}";
 
@@ -108,16 +120,39 @@ static int compile_vertex_pressure_shader()
                                pi5::ShaderStage::Vertex,shader,error);
     blob->Release();
     if(!ok){
-        std::printf("Pi5 linked-style vertex compile failed: %s\n",error.c_str());
+        std::printf("Pi5 high-pressure vertex compile failed: %s\n",error.c_str());
         return 2;
     }
     unsigned scalars=0;
     for(auto mask:shader.inputs)for(unsigned c=0;c<4;++c)scalars+=(mask>>c)&1u;
-    if(scalars!=32){
-        std::printf("FAIL: vertex input scalars=%u expected=32\n",scalars);
+    if(scalars!=32||shader.varyingScalars!=32){
+        std::printf("FAIL: vertex inputs=%u varyings=%u expected=32/32\n",scalars,shader.varyingScalars);
         return 3;
     }
-    std::puts("PASS vertex-pressure shader: 32 inputs plus cbuffer compile without uniform register exhaustion");
+
+    std::vector<uint32_t> uniforms;
+    uniforms.reserve(shader.uniforms.size());
+    for(const auto &u:shader.uniforms)
+        uniforms.push_back(u.kind==pi5::UniformKind::Literal?u.value:0u);
+    pi5::ProgramRules rules;
+    rules.stage=pi5::ProgramStage::Vertex;
+    rules.vertexScalars=32;
+    rules.varyingScalars=shader.varyingScalars;
+    rules.constants=shader.constantWords!=0;
+    uint64_t registers=0;
+    if(!pi5::ValidateProgram(shader.code.data(),static_cast<uint32_t>(shader.code.size()),
+                             uniforms.data(),static_cast<uint32_t>(uniforms.size()),
+                             rules,nullptr,&registers)){
+        std::puts("FAIL: 64-register vertex program did not pass kernel validator");
+        return 4;
+    }
+    if(!(registers&UINT64_C(0xffffffff00000000))){
+        std::printf("FAIL: stress shader stayed in RF0-RF31 mask=%016llx\n",
+                    static_cast<unsigned long long>(registers));
+        return 5;
+    }
+    std::printf("PASS vertex-pressure shader: validated high-register mask=%016llx (2-thread fallback)\n",
+                static_cast<unsigned long long>(registers));
     return 0;
 }
 
@@ -146,6 +181,6 @@ int main()
     if (int r = compile_shader(expLogShader, 47, 4)) return 30 + r;
     if (int r = compile_vertex_pressure_shader()) return 40 + r;
 
-    std::puts("Pi5 shader SQRT + EXP + LOG + 32-varying + lazy-vertex regression: PASS");
+    std::puts("Pi5 shader SQRT + EXP + LOG + 32-varying + 64-register vertex fallback regression: PASS");
     return 0;
 }
