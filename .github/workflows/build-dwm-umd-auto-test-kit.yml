@@ -1,9 +1,9 @@
-name: Build DWM Lazy Vertex Input Fix Auto Test Kit v6
+name: Build DWM 64-Register Vertex Fallback Test Kit v7
 
 on:
   push:
     branches:
-      - dwm-lazy-vertex-input-fix-v6
+      - dwm-64reg-vertex-fallback-v7
     paths:
       - 'pi5-graphics/**'
       - 'tools/dwm-umd-auto-test-kit/**'
@@ -32,6 +32,9 @@ jobs:
             'pi5-graphics/native/shader.cpp',
             'pi5-graphics/native/encode.cpp',
             'pi5-graphics/native/validate.cpp',
+            'pi5-graphics/native/validate.h',
+            'pi5-graphics/native/qpu-alu.h',
+            'pi5-graphics/kmd/gpu.cpp',
             'pi5-graphics/tests/encoder-revision-test.cpp',
             'pi5-graphics/tests/shader-varying-sqrt-test.cpp'
           )
@@ -58,6 +61,11 @@ jobs:
           if($validator -notmatch 'b!=34' -or $validator -notmatch 'b!=35'){throw 'EXP/LOG SFU selectors are not validated'}
           if($shader -notmatch 'liveVertexAttributes' -or $shader -notmatch 'LoadVertexAttribute' -or
              $shader -notmatch 'loadedVertexAttributes<liveVertexAttributes'){throw 'Lazy vertex-input register-pressure fix is missing'}
+          if($shader -notmatch 'registerLimit' -or $shader -notmatch 'limits\[2\]=\{32u,64u\}'){throw '64-register vertex fallback is missing'}
+          $validate=Get-Content pi5-graphics/native/validate.h -Raw
+          if($validate -notmatch 'uint64_t \*registers'){throw 'Validator register mask is not 64-bit'}
+          $gpu=Get-Content pi5-graphics/kmd/gpu.cpp -Raw
+          if($gpu -notmatch '0xffffffff00000000' -or $gpu -notmatch 'fourThreadMask'){throw 'KMD thread-mode selection is missing'}
 
       - name: Parse automatic test PowerShell
         shell: pwsh
@@ -97,7 +105,7 @@ jobs:
           $vs=& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if(!$vs){throw 'Visual Studio x64 C++ tools not found'}
           $vcvars=Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
-          $cmd='call "'+$vcvars+'" && cl /nologo /EHsc /std:c++20 /W4 /WX pi5-graphics\tests\encoder-revision-test.cpp /Fe:Build\encoder-revision-test.exe && Build\encoder-revision-test.exe && cl /nologo /EHsc /std:c++20 /W4 /WX pi5-graphics\tests\shader-varying-sqrt-test.cpp pi5-graphics\native\shader.cpp /Fe:Build\shader-varying-sqrt-test.exe /link d3dcompiler.lib && Build\shader-varying-sqrt-test.exe'
+          $cmd='call "'+$vcvars+'" && cl /nologo /EHsc /std:c++20 /W4 /WX pi5-graphics\tests\encoder-revision-test.cpp /Fe:Build\encoder-revision-test.exe && Build\encoder-revision-test.exe && cl /nologo /EHsc /std:c++20 /W4 /WX pi5-graphics\tests\shader-varying-sqrt-test.cpp pi5-graphics\native\shader.cpp pi5-graphics\native\validate.cpp /Fe:Build\shader-varying-sqrt-test.exe /link d3dcompiler.lib && Build\shader-varying-sqrt-test.exe'
           & cmd.exe /d /s /c $cmd
           if($LASTEXITCODE){throw 'V3D encoder/shader regression failed'}
 
@@ -122,7 +130,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          $root='Build\RPi5-DWM-Lazy-Vertex-Input-Fix-Test-Kit-v6.0'
+          $root='Build\RPi5-DWM-64Reg-Vertex-Fallback-Test-Kit-v7.0'
           $payload=Join-Path $root 'Payload\Graphics'
           New-Item $root,$payload -ItemType Directory -Force | Out-Null
 
@@ -133,15 +141,16 @@ jobs:
           Copy-Item Build\Farjanatech-RPi5-DWM-UMD-Diagnostic-Test.cer $payload -Force
 
           @(
-            'RPi5 DWM Lazy Vertex Input Fix Test Kit v6.0',
+            'RPi5 DWM 64-Register Vertex Fallback Test Kit v7.0',
             ('Branch: '+$env:GITHUB_REF_NAME),
             ('Commit: '+$env:GITHUB_SHA),
             'Universal Graphics base: c4d7a9feaeaa99f032547e33462ad056a4508c14',
-            'Prior fixes retained: 32 vertex-input scalars, 32 pixel varyings, DXBC SQRT, EXP and LOG.',
-            'v5 evidence: all 889 current first-fatal records moved to linked vertex shader 0x7e103b42 with uniform register pressure exceeded.',
-            'Cause: eager loading pinned all 32 live vertex scalars in the 32-register QPU bank before uniform arithmetic.',
-            'Fix: load vertex attributes on demand and block VPM output stores until every live input has been read at least once.',
-            'A real 32-input + cbuffer vertex shader regression must compile successfully before packaging.',
+            'Prior fixes retained: 32 vertex-input scalars, lazy vertex loads, 32 pixel varyings, DXBC SQRT, EXP and LOG.',
+            'v6 evidence: all 1025 current first-fatal records are linked vertex shader 0x7e103b42 with 4-thread register-bank exhaustion.',
+            'Hardware basis: V3D 4.x+ provides 32 physical registers in 4-thread mode and 64 in 2-thread mode.',
+            'Fix: keep 32-register/4-thread compilation first, then retry vertex shaders with RF0-RF63 only on register pressure.',
+            'KMD derives the 4-thread bit from the validated 64-bit physical-register mask; high-register programs run 2-thread.',
+            'A stress vertex regression must validate RF32-RF63 use before packaging.',
             'First-fatal diagnostics remain enabled to expose the next blocker.',
             'Build configuration: Release ARM64',
             'Automatic flow: install -> reboot -> record -> open Date & time -> finalize -> exact-INF rollback -> verify.'
@@ -151,12 +160,12 @@ jobs:
             '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),($_.FullName.Substring((Resolve-Path $root).Path.Length+1).Replace('\','/'))
           } | Set-Content (Join-Path $root 'SHA256SUMS.txt') -Encoding ASCII
 
-          $zip='Build\RPi5-DWM-Lazy-Vertex-Input-Fix-Test-Kit-v6.0.zip'
+          $zip='Build\RPi5-DWM-64Reg-Vertex-Fallback-Test-Kit-v7.0.zip'
           Compress-Archive -Path "$root\*" -DestinationPath $zip -CompressionLevel Optimal -Force
           Get-FileHash $zip -Algorithm SHA256 | Format-List
 
       - uses: actions/upload-artifact@v4
         with:
-          name: RPi5-DWM-Lazy-Vertex-Input-Fix-Test-Kit-v6.0
-          path: Build/RPi5-DWM-Lazy-Vertex-Input-Fix-Test-Kit-v6.0.zip
+          name: RPi5-DWM-64Reg-Vertex-Fallback-Test-Kit-v7.0
+          path: Build/RPi5-DWM-64Reg-Vertex-Fallback-Test-Kit-v7.0.zip
           if-no-files-found: error
