@@ -99,7 +99,7 @@ bool EncodeDrawBatch(const Draw *draws,uint32_t count,uint32_t base,void *buffer
     for(uint32_t drawIndex=0;drawIndex<count;++drawIndex){const auto&d=draws[drawIndex];
         Need(d.width && d.height && d.width <= 4096 && d.height <= 4096 &&
              d.pitch >= d.width * 4 && d.pitch <= 65536 && !(d.pitch & 3),"invalid render surface dimensions");
-        Need(d.vertexScalars && d.vertexScalars<=16 && d.vertexCount && d.vertexCount <= 4096 && !(d.vertexCount % 3) && d.vertexStride >= d.vertexScalars*4 &&
+        Need(d.vertexScalars && d.vertexScalars<=PI5_MAX_VERTEX_SCALARS && d.vertexCount && d.vertexCount <= 4096 && !(d.vertexCount % 3) && d.vertexStride >= d.vertexScalars*4 &&
              d.vertexStride <= 4096 && !(d.vertexStride & 3),"invalid triangle vertex range");
         Need(d.varyingScalars<=PI5_MAX_VARYINGS&&d.nonPerspectiveMask<(1u<<d.varyingScalars)&&d.flatMask<(1u<<d.varyingScalars)&&!(d.flatMask&d.nonPerspectiveMask),"invalid varying count or interpolation mask");
         bool viewportSet=(d.viewport[0]|d.viewport[1]|d.viewport[2]|d.viewport[3])!=0;
