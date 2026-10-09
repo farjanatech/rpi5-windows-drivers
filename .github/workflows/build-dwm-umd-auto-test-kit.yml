@@ -1,9 +1,9 @@
-name: Build DWM Vertex Scalar 32 Fix Auto Test Kit v3
+name: Build DWM Varying32 SQRT Fix Auto Test Kit v4
 
 on:
   push:
     branches:
-      - dwm-vertex-scalar-32-fix-v3
+      - dwm-varying32-sqrt-fix-v4
     paths:
       - 'pi5-graphics/**'
       - 'tools/dwm-umd-auto-test-kit/**'
@@ -32,7 +32,8 @@ jobs:
             'pi5-graphics/native/shader.cpp',
             'pi5-graphics/native/encode.cpp',
             'pi5-graphics/native/validate.cpp',
-            'pi5-graphics/tests/encoder-revision-test.cpp'
+            'pi5-graphics/tests/encoder-revision-test.cpp',
+            'pi5-graphics/tests/shader-varying-sqrt-test.cpp'
           )
           $unexpected=@($product|Where-Object {$_ -notin $allowed})
           if($unexpected.Count){throw ('Unexpected graphics product-code changes: '+($unexpected -join ', '))}
@@ -44,8 +45,14 @@ jobs:
           }
           $abi=Get-Content pi5-graphics/native/abi.h -Raw
           if($abi -notmatch '#define\s+PI5_MAX_VERTEX_SCALARS\s+32u'){throw 'Vertex scalar limit is not 32'}
+          if($abi -notmatch '#define\s+PI5_MAX_VARYINGS\s+32u'){throw 'Varying scalar limit is not 32'}
+          if($abi -notmatch 'Pi5ValidVaryingMasks'){throw 'Safe 32-bit varying-mask validation is missing'}
           $validator=Get-Content pi5-graphics/native/validate.cpp -Raw
           if($validator -notmatch 'UINT64_C\(63\)<<6'){throw 'QPU vertex attribute scalar mask is not six bits'}
+          $encoder=Get-Content pi5-graphics/native/encode.cpp -Raw
+          if($encoder -notmatch 'VaryingFlags' -or $encoder -notmatch 'PI5_VARYING_FLAG_CHUNK'){throw 'Multi-packet varying flags are missing'}
+          $shader=Get-Content pi5-graphics/native/shader.cpp -Raw
+          if($shader -notmatch 'op == 75' -or $shader -notmatch 'Op::Rsqrt'){throw 'DXBC SQRT lowering is missing'}
 
       - name: Parse automatic test PowerShell
         shell: pwsh
@@ -76,7 +83,7 @@ jobs:
             if($LASTEXITCODE){throw "WDK installation failed with exit code $LASTEXITCODE"}
           }
 
-      - name: Run V3D revision encoder regression
+      - name: Run V3D encoder and shader regressions
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
@@ -85,9 +92,9 @@ jobs:
           $vs=& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           if(!$vs){throw 'Visual Studio x64 C++ tools not found'}
           $vcvars=Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
-          $cmd='call "'+$vcvars+'" && cl /nologo /EHsc /std:c++20 /W4 /WX pi5-graphics\tests\encoder-revision-test.cpp /Fe:Build\encoder-revision-test.exe && Build\encoder-revision-test.exe'
+          $cmd='call "'+$vcvars+'" && cl /nologo /EHsc /std:c++20 /W4 /WX pi5-graphics\tests\encoder-revision-test.cpp /Fe:Build\encoder-revision-test.exe && Build\encoder-revision-test.exe && cl /nologo /EHsc /std:c++20 /W4 /WX pi5-graphics\tests\shader-varying-sqrt-test.cpp pi5-graphics\native\shader.cpp /Fe:Build\shader-varying-sqrt-test.exe /link d3dcompiler.lib && Build\shader-varying-sqrt-test.exe'
           & cmd.exe /d /s /c $cmd
-          if($LASTEXITCODE){throw 'V3D revision encoder regression failed'}
+          if($LASTEXITCODE){throw 'V3D encoder/shader regression failed'}
 
       - name: Create auto-test signing certificate
         shell: pwsh
@@ -110,7 +117,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          $root='Build\RPi5-DWM-Vertex-Scalar-32-Fix-Test-Kit-v3.0'
+          $root='Build\RPi5-DWM-Varying32-SQRT-Fix-Test-Kit-v4.0'
           $payload=Join-Path $root 'Payload\Graphics'
           New-Item $root,$payload -ItemType Directory -Force | Out-Null
 
@@ -121,14 +128,15 @@ jobs:
           Copy-Item Build\Farjanatech-RPi5-DWM-UMD-Diagnostic-Test.cer $payload -Force
 
           @(
-            'RPi5 DWM Vertex Scalar 32 Fix Test Kit v3.0',
+            'RPi5 DWM Varying32 SQRT Fix Test Kit v4.0',
             ('Branch: '+$env:GITHUB_REF_NAME),
             ('Commit: '+$env:GITHUB_SHA),
             'Universal Graphics base: c4d7a9feaeaa99f032547e33462ad056a4508c14',
-            'Causal evidence: 938/938 v2 fatals rejected vertex shader 0x7e103b42 with vertex attribute scalar limit exceeded.',
-            'Fix: extend the simple Pi5D3D vertex-input path coherently from 16 to 32 scalar components.',
-            'The implementation intentionally remains below Mesa V3D''s broader capability because this UMD currently keeps live vertex inputs in one 32-register QPU bank.',
-            'v2 first-fatal diagnostics remain enabled to expose any next unsupported operation.',
+            'Prior fix retained: vertex inputs support 32 scalar components.',
+            'v3 evidence: 947/1036 fatals moved to pixel varying scalar limit; 89/1036 moved to unsupported DXBC opcode 75 (SQRT).',
+            'Fix: support 32 pixel varying scalars with multiple 24-varying V3D flag packets.',
+            'Fix: lower DXBC SQRT through V3D RSQ followed by reciprocal.',
+            'First-fatal diagnostics remain enabled to expose any next unsupported operation.',
             'Build configuration: Release ARM64',
             'Automatic flow: install -> reboot -> record -> open Date & time -> finalize -> exact-INF rollback -> verify.'
           ) | Set-Content (Join-Path $root 'BUILD-PROVENANCE.txt') -Encoding UTF8
@@ -137,12 +145,12 @@ jobs:
             '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),($_.FullName.Substring((Resolve-Path $root).Path.Length+1).Replace('\','/'))
           } | Set-Content (Join-Path $root 'SHA256SUMS.txt') -Encoding ASCII
 
-          $zip='Build\RPi5-DWM-Vertex-Scalar-32-Fix-Test-Kit-v3.0.zip'
+          $zip='Build\RPi5-DWM-Varying32-SQRT-Fix-Test-Kit-v4.0.zip'
           Compress-Archive -Path "$root\*" -DestinationPath $zip -CompressionLevel Optimal -Force
           Get-FileHash $zip -Algorithm SHA256 | Format-List
 
       - uses: actions/upload-artifact@v4
         with:
-          name: RPi5-DWM-Vertex-Scalar-32-Fix-Test-Kit-v3.0
-          path: Build/RPi5-DWM-Vertex-Scalar-32-Fix-Test-Kit-v3.0.zip
+          name: RPi5-DWM-Varying32-SQRT-Fix-Test-Kit-v4.0
+          path: Build/RPi5-DWM-Varying32-SQRT-Fix-Test-Kit-v4.0.zip
           if-no-files-found: error
