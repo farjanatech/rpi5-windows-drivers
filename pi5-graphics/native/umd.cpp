@@ -52,6 +52,103 @@ static void LogMessage(bool critical,const char*format,va_list args){
 }
 static void Log(const char*format,...){va_list args;va_start(args,format);LogMessage(false,format,args);va_end(args);}
 static void LogCritical(const char*format,...){va_list args;va_start(args,format);LogMessage(true,format,args);va_end(args);}
+
+static void DiagnosticWrite(HANDLE file,const char*format,...){
+    char line[1024]={};
+    va_list args;va_start(args,format);
+    vsnprintf_s(line,sizeof(line),_TRUNCATE,format,args);
+    va_end(args);
+    DWORD bytes=static_cast<DWORD>(strlen(line)),written=0;
+    if(bytes)(void)WriteFile(file,line,bytes,&written,nullptr);
+}
+static uint32_t DiagnosticProgramHash(const Program*program){
+    if(!program)return 0;
+    uint32_t hash=2166136261u;
+    for(UINT word:program->tokens)hash=(hash^word)*16777619u;
+    return hash;
+}
+static void RecordCall(Device*d,const char*where){
+    if(!d||!where)return;
+    LONG sequence=InterlockedIncrement(&d->diagnosticSequence);
+    auto&record=d->diagnosticCalls[(static_cast<ULONG>(sequence)-1u)%64u];
+    InterlockedExchange(&record.sequence,0);
+    record.tick=GetTickCount();
+    record.thread=GetCurrentThreadId();
+    record.failure=d->failure;
+    strncpy_s(record.where,sizeof(record.where),where,_TRUNCATE);
+    InterlockedExchange(&record.sequence,sequence);
+}
+static void PersistProcessEvent(const char*kind,UINT id){
+    CreateDirectoryW(L"C:\\ProgramData\\Pi5GraphicsDiagnostics",nullptr);
+    wchar_t path[MAX_PATH];
+    swprintf_s(path,L"C:\\ProgramData\\Pi5GraphicsDiagnostics\\umd-event-%lu-%u-%lu.txt",
+        GetCurrentProcessId(),id,GetTickCount());
+    HANDLE file=CreateFileW(path,GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(file==INVALID_HANDLE_VALUE)return;
+    DiagnosticWrite(file,"Pi5D3D diagnostic event v1\r\nkind=%s\r\nid=%u\r\npid=%lu\r\ntid=%lu\r\ntick=%lu\r\n",
+        kind?kind:"<null>",id,GetCurrentProcessId(),GetCurrentThreadId(),GetTickCount());
+    CloseHandle(file);
+}
+static void PersistFirstFatal(Device*d,HRESULT hr,const char*where){
+    if(!d||hr==DXGI_DDI_ERR_WASSTILLDRAWING||
+       InterlockedCompareExchange(&d->fatalCaptured,1,0)!=0)return;
+    CreateDirectoryW(L"C:\\ProgramData\\Pi5GraphicsDiagnostics",nullptr);
+    wchar_t path[MAX_PATH];
+    swprintf_s(path,L"C:\\ProgramData\\Pi5GraphicsDiagnostics\\umd-first-fatal-%lu-%lu-%lu.txt",
+        GetCurrentProcessId(),GetCurrentThreadId(),GetTickCount());
+    HANDLE file=CreateFileW(path,GENERIC_WRITE,FILE_SHARE_READ|FILE_SHARE_WRITE,nullptr,CREATE_NEW,FILE_ATTRIBUTE_NORMAL,nullptr);
+    if(file==INVALID_HANDLE_VALUE){InterlockedExchange(&d->fatalCaptured,0);return;}
+
+    DiagnosticWrite(file,"Pi5D3D first-fatal diagnostic v1\r\n");
+    DiagnosticWrite(file,"pid=%lu tid=%lu tick=%lu\r\n",GetCurrentProcessId(),GetCurrentThreadId(),GetTickCount());
+    DiagnosticWrite(file,"where=%s\r\nfatal_hr=0x%08lx\r\nprior_failure=0x%08lx\r\nnativeDisplay=%u\r\n",
+        where?where:"<null>",static_cast<ULONG>(hr),static_cast<ULONG>(d->failure),d->nativeDisplay?1u:0u);
+    DiagnosticWrite(file,
+        "state topology=%u sampleMask=0x%08x stencilRef=%u target=%p layout=%p index=%p indexFormat=%u indexOffset=%u blend=%p depth=%p raster=%p\r\n",
+        static_cast<UINT>(d->topology),d->sampleMask,d->stencilRef,d->target,d->layout,d->indexBuffer,
+        static_cast<UINT>(d->indexFormat),d->indexOffset,d->blend,d->depth,d->raster);
+    DiagnosticWrite(file,"viewport x=%g y=%g w=%g h=%g min=%g max=%g scissor=%ld,%ld,%ld,%ld\r\n",
+        d->viewport.TopLeftX,d->viewport.TopLeftY,d->viewport.Width,d->viewport.Height,
+        d->viewport.MinDepth,d->viewport.MaxDepth,d->scissor.left,d->scissor.top,d->scissor.right,d->scissor.bottom);
+    DiagnosticWrite(file,"batch count=%u bytes=%llu vertices=%llu resources=%llu gathered=%llu\r\n",
+        d->batch.Count,static_cast<unsigned long long>(d->batchBytes.size()),
+        static_cast<unsigned long long>(d->batchVertices.size()),
+        static_cast<unsigned long long>(d->batchResources.size()),
+        static_cast<unsigned long long>(d->gatheredVertices.size()));
+
+    const Resource*target=d->target?d->target->resource:nullptr;
+    if(target)DiagnosticWrite(file,
+        "target allocation=0x%x kernel=0x%x %ux%u pitch=%u format=%u bind=0x%x misc=0x%x levels=%u primary=%u mapped=%p\r\n",
+        target->allocation,target->kernelResource,target->info.Width,target->info.Height,target->info.Pitch,
+        target->info.Format,target->info.BindFlags,target->info.MiscFlags,target->info.Levels,target->primary?1u:0u,target->mapped);
+    if(d->indexBuffer)DiagnosticWrite(file,
+        "index allocation=0x%x width=%u bytes=%u format=%u bind=0x%x mapped=%p\r\n",
+        d->indexBuffer->allocation,d->indexBuffer->info.Width,d->indexBuffer->info.Bytes,
+        d->indexBuffer->info.Format,d->indexBuffer->info.BindFlags,d->indexBuffer->mapped);
+
+    const Program*programs[2]={d->vs,d->ps};const char*names[2]={"vs","ps"};
+    for(UINT i=0;i<2;++i){
+        const Program*p=programs[i];
+        if(p)DiagnosticWrite(file,
+            "shader %s stage=%u compiled=%u loops=%u tokens=%llu hash=0x%08x ptr=%p\r\n",
+            names[i],static_cast<UINT>(p->stage),p->compiled?1u:0u,p->loops?1u:0u,
+            static_cast<unsigned long long>(p->tokens.size()),DiagnosticProgramHash(p),p);
+        else DiagnosticWrite(file,"shader %s <null>\r\n",names[i]);
+    }
+
+    LONG end=InterlockedCompareExchange(&d->diagnosticSequence,0,0);
+    LONG first=end>63?end-63:1;
+    DiagnosticWrite(file,"call_ring first=%ld end=%ld\r\n",first,end);
+    for(LONG sequence=first;sequence<=end;++sequence){
+        auto&record=d->diagnosticCalls[(static_cast<ULONG>(sequence)-1u)%64u];
+        LONG published=InterlockedCompareExchange(&record.sequence,0,0);
+        if(published!=sequence)continue;
+        DiagnosticWrite(file,"call seq=%ld tick=%lu tid=%lu prior=0x%08lx where=%s\r\n",
+            sequence,record.tick,record.thread,static_cast<ULONG>(record.failure),record.where);
+    }
+    FlushFileBuffers(file);
+    CloseHandle(file);
+}
 // DEBUG diagnostic: with this flag file present, unsupported draws are logged
 // and skipped instead of failing the device, so one compositor run lists every gap.
 static bool SkipUnsupportedDraws(){
@@ -79,6 +176,7 @@ static void CaptureShader(const UINT*code,UINT words,ShaderStage stage){
 static void Require(bool value,HRESULT hr=E_INVALIDARG){if(!value)throw ErrorCode{hr};}
 static void Check(HRESULT hr){if(FAILED(hr))throw ErrorCode{hr};}
 template<class F> static void Guard(Device*d,const char*where,F f){
+    RecordCall(d,where);
     try {if(SUCCEEDED(d->failure))f();}
     catch(const ErrorCode&e){d->Error(e.hr,where);}
     catch(const std::bad_alloc&){d->Error(E_OUTOFMEMORY,where);}
@@ -86,8 +184,10 @@ template<class F> static void Guard(Device*d,const char*where,F f){
 }
 void Device::Error(HRESULT hr,const char*where){
     if(hr==DXGI_DDI_ERR_WASSTILLDRAWING){user.pfnSetErrorCb(core,hr);return;}
+    RecordCall(this,where);
+    PersistFirstFatal(this,hr,where);
     LogCritical("Pi5D3D %s failed: %08lx\n",where,hr);
-    if(hr!=DXGI_DDI_ERR_WASSTILLDRAWING)failure=hr;
+    failure=hr;
     user.pfnSetErrorCb(core,hr);
 }
 void *Device::Lock(Resource*r,D3D10_DDI_MAP mode,UINT flags){
@@ -718,13 +818,23 @@ void SetDeviceFunctions(D3D10DDI_DEVICEFUNCS*f){
     f->pfnCalcPrivateRasterizerStateSize=StateSize<D3D10_DDI_RASTERIZER_DESC>;f->pfnCreateRasterizerState=CreateState<D3D10_DDI_RASTERIZER_DESC,D3D10DDI_HRASTERIZERSTATE,D3D10DDI_HRTRASTERIZERSTATE>;f->pfnDestroyRasterizerState=DestroyState<D3D10DDI_HRASTERIZERSTATE>;
     f->pfnCalcPrivateSamplerSize=StateSize<D3D10_DDI_SAMPLER_DESC>;f->pfnCreateSampler=CreateState<D3D10_DDI_SAMPLER_DESC,D3D10DDI_HSAMPLER,D3D10DDI_HRTSAMPLER>;f->pfnDestroySampler=DestroyState<D3D10DDI_HSAMPLER>;
 }
-template<class T>static HRESULT APIENTRY UnsupportedDxgi(T*){return DXGI_DDI_ERR_UNSUPPORTED;}
+template<class T,UINT Id>static HRESULT APIENTRY UnsupportedDxgi(T*){
+    static volatile LONG captured=0;
+    if(InterlockedCompareExchange(&captured,1,0)==0)PersistProcessEvent("unsupported-dxgi",Id);
+    return DXGI_DDI_ERR_UNSUPPORTED;
+}
 static HRESULT APIENTRY Present(DXGI_DDI_ARG_PRESENT*a){
     auto d=reinterpret_cast<Device*>(a->hDevice);auto src=reinterpret_cast<Resource*>(a->hSurfaceToPresent),dst=reinterpret_cast<Resource*>(a->hDstResource);
-    if(!src||!src->allocation||src->mapped||a->SrcSubResourceIndex||a->DstSubResourceIndex||!d->dxgi||!d->dxgi->pfnPresentCb||(dst&&(!dst->allocation||dst->mapped)))return E_INVALIDARG;
+    RecordCall(d,"DXGI Present");
+    if(!src||!src->allocation||src->mapped||a->SrcSubResourceIndex||a->DstSubResourceIndex||!d->dxgi||!d->dxgi->pfnPresentCb||(dst&&(!dst->allocation||dst->mapped))){
+        PersistFirstFatal(d,E_INVALIDARG,"DXGI Present validation");return E_INVALIDARG;
+    }
     Guard(d,"Present flush",[&]{d->FlushBatch();});if(FAILED(d->failure))return d->failure;
     DXGIDDICB_PRESENT present={};present.hSrcAllocation=src->allocation;present.hDstAllocation=dst?dst->allocation:0;present.pDXGIContext=a->pDXGIContext;present.hContext=d->context.hContext;
-    HRESULT hr=d->dxgi->pfnPresentCb(d->runtime.handle,&present);if(FAILED(hr))LogCritical("Pi5D3D Present failed: %08lx src=%x dst=%x\n",hr,present.hSrcAllocation,present.hDstAllocation);else Log("Pi5D3D Present hr=%08lx src=%x dst=%x\n",hr,present.hSrcAllocation,present.hDstAllocation);return hr;
+    HRESULT hr=d->dxgi->pfnPresentCb(d->runtime.handle,&present);
+    if(FAILED(hr)){PersistFirstFatal(d,hr,"DXGI Present callback");LogCritical("Pi5D3D Present failed: %08lx src=%x dst=%x\n",hr,present.hSrcAllocation,present.hDstAllocation);}
+    else Log("Pi5D3D Present hr=%08lx src=%x dst=%x\n",hr,present.hSrcAllocation,present.hDstAllocation);
+    return hr;
 }
 static HRESULT APIENTRY ResolveShared(DXGI_DDI_ARG_RESOLVESHAREDRESOURCE*a){
     auto d=reinterpret_cast<Device*>(a->hDevice);auto r=reinterpret_cast<Resource*>(a->hResource);
@@ -767,7 +877,7 @@ static HRESULT APIENTRY CreateDevice(D3D10DDI_HADAPTER adapter,D3D10DDIARG_CREAT
     d->context.EngineAffinity=1;HRESULT hr=d->kernel.pfnCreateContextCb(d->runtime.handle,&d->context);
     if(FAILED(hr)){d->~Device();return hr;}
     SetDeviceFunctions(a->pDeviceFuncs);
-    if(a->DXGIBaseDDI.pDXGIDDIBaseFunctions){auto f=a->DXGIBaseDDI.pDXGIDDIBaseFunctions;*f={};f->pfnPresent=Present;f->pfnGetGammaCaps=UnsupportedDxgi<DXGI_DDI_ARG_GET_GAMMA_CONTROL_CAPS>;f->pfnSetDisplayMode=DisplayMode;f->pfnSetResourcePriority=Priority;f->pfnQueryResourceResidency=Residency;f->pfnRotateResourceIdentities=RotateResources;f->pfnBlt=UnsupportedDxgi<DXGI_DDI_ARG_BLT>;}
+    if(a->DXGIBaseDDI.pDXGIDDIBaseFunctions){auto f=a->DXGIBaseDDI.pDXGIDDIBaseFunctions;*f={};f->pfnPresent=Present;f->pfnGetGammaCaps=UnsupportedDxgi<DXGI_DDI_ARG_GET_GAMMA_CONTROL_CAPS,1>;f->pfnSetDisplayMode=DisplayMode;f->pfnSetResourcePriority=Priority;f->pfnQueryResourceResidency=Residency;f->pfnRotateResourceIdentities=RotateResources;f->pfnBlt=UnsupportedDxgi<DXGI_DDI_ARG_BLT,2>;}
     if(a->Interface==D3D10_0_7_DDI_INTERFACE_VERSION&&a->DXGIBaseDDI.pDXGIDDIBaseFunctions2)a->DXGIBaseDDI.pDXGIDDIBaseFunctions2->pfnResolveSharedResource=ResolveShared;
     return S_OK;
 }
