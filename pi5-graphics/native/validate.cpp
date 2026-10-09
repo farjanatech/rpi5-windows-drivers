@@ -67,7 +67,7 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
         if((code[at]&~(UINT64_C(63)<<46))==UINT64_C(0x39003186bb03f000)){
             if(stage!=ProgramStage::Pixel||varyings>=varyingScalars||words-at<3)return false;
             bool flat=(flatMask&(1u<<varyings))!=0;
-            uint64_t load=code[at++];unsigned reg=unsigned((load>>46)&31);
+            uint64_t load=code[at++];unsigned reg=unsigned((load>>46)&63);
             if(!reg||reg==3)return false;
             bool gap=at<words&&code[at]==Nop;if(gap)++at;
             if(!flat&&!(nonPerspectiveMask&(1u<<varyings))){if(at>=words||code[at++]!=Mul(21,reg,reg,3))return false;}else if(!gap)return false;
@@ -95,7 +95,7 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
             unsigned results=4;
             if(words-at<4||code[at++]!=Switch||code[at++]!=Nop||code[at++]!=Nop||code[at++]!=Nop||words-at<results)return false;
             if(patches){auto&p=patches->lookups[samples];p.config0=used;p.config1=used+1;p.binding=binding;p.form=form;p.constant=constant;patches->count=samples+1;}++samples;used+=2;
-            for(unsigned i=0;i<results;++i){if(at>=words)return false;word=code[at++];reg=unsigned((word>>46)&31);if(word!=(UINT64_C(0x38803186bb03f000)|(uint64_t(reg)<<46)))return false;defined|=UINT64_C(1)<<reg;Padding();}
+            for(unsigned i=0;i<results;++i){if(at>=words)return false;word=code[at++];reg=unsigned((word>>46)&63);if(word!=(UINT64_C(0x38803186bb03f000)|(uint64_t(reg)<<46)))return false;defined|=UINT64_C(1)<<reg;Padding();}
             continue;
         }
         // A bounded immediate MOV reads the fixed 48-entry hardware table;
@@ -173,7 +173,7 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
         uint64_t word=code[at++];unsigned reg=0,nops=0;bool writes=true;
         if(word==Nop)continue;
         if((word&~(UINT64_C(63)<<46))==UINT64_C(0x39803186bb03f000)){
-            reg=unsigned((word>>46)&31);if(used>=uniformCount)return false;++used;
+            reg=unsigned((word>>46)&63);if(used>=uniformCount)return false;++used;
         }else if((word&~((UINT64_C(63)<<32)|(UINT64_C(63)<<6)))==UINT64_C(0x39c02180bc03f000)){
             nops=1;
             reg=unsigned((word>>32)&63);if(stage==ProgramStage::Pixel||((word>>6)&63)>=rules.vertexScalars)return false;
