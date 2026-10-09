@@ -20,7 +20,7 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
     if(patches)*patches={};if(registers)*registers=0;if(usedBindings)*usedBindings=0;uint32_t samples=0,constantSamples=0,bindingsUsed=0,bindingsDeclared=0;
     const auto stage=rules.stage;const uint32_t varyingScalars=rules.varyingScalars,nonPerspectiveMask=rules.nonPerspectiveMask,flatMask=rules.flatMask;
     if(!code||!words||words>PI5_MAX_PROGRAM_WORDS||uniformCount>PI5_MAX_PROGRAM_UNIFORMS||(uniformCount&&!uniforms)||
-       static_cast<uint32_t>(stage)>2||rules.vertexScalars>PI5_MAX_VERTEX_SCALARS||varyingScalars>PI5_MAX_VARYINGS||nonPerspectiveMask>=(1u<<varyingScalars)||flatMask>=(1u<<varyingScalars)||(nonPerspectiveMask&flatMask)||
+       static_cast<uint32_t>(stage)>2||rules.vertexScalars>PI5_MAX_VERTEX_SCALARS||!Pi5ValidVaryingMasks(varyingScalars,nonPerspectiveMask,flatMask)||
        (stage!=ProgramStage::Pixel&&(nonPerspectiveMask||flatMask||rules.targetReads)))return false;
     for(unsigned b=0;b<PI5_BINDINGS;++b){if((rules.bindingKinds[b]&&rules.bindingKinds[b]!=Pi5BindingTexture&&!Pi5BufferElementBytes(rules.bindingKinds[b])))return false;if(rules.bindingKinds[b])bindingsDeclared|=1u<<b;}
     if(checkedUniforms)memset(checkedUniforms,0,uniformCount);
@@ -326,7 +326,7 @@ bool ValidateCommand(const void *buffer,uint32_t bytes,const Pi5AllocationInfo *
         }else return false;
     }
     if(referenced!=(((1u<<count)-1)&~3u))return false;
-    if(c->Target||c->Vertices!=1||!c->VertexComponents||c->VertexComponents>PI5_MAX_VERTEX_SCALARS||c->VaryingScalars>PI5_MAX_VARYINGS||c->NonPerspectiveMask>=(1u<<c->VaryingScalars)||c->FlatMask>=(1u<<c->VaryingScalars)||(c->FlatMask&c->NonPerspectiveMask)||
+    if(c->Target||c->Vertices!=1||!c->VertexComponents||c->VertexComponents>PI5_MAX_VERTEX_SCALARS||!Pi5ValidVaryingMasks(c->VaryingScalars,c->NonPerspectiveMask,c->FlatMask)||
        !c->VertexCount||c->VertexCount>4095||c->VertexCount%3||c->VertexStride<c->VertexComponents*4||c->VertexStride>4096||((c->VertexOffset|c->VertexStride)&3)||
        c->VertexOffset>=r[1].Width||uint64_t(c->VertexCount-1)*c->VertexStride+c->VertexComponents*4>r[1].Width-c->VertexOffset)return false;
     uint32_t viewport[6],fixed[4];memcpy(viewport,c->Viewport,sizeof(viewport));
