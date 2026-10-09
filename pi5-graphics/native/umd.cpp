@@ -196,6 +196,7 @@ static void RequireDiagnostic2(bool value,HRESULT hr,const char*expression,ULONG
 static void Check(HRESULT hr){if(FAILED(hr)){SetDiagnosticReason("Check failed hr=0x%08lx",static_cast<ULONG>(hr));throw ErrorCode{hr};}}
 template<class F> static void Guard(Device*d,const char*where,F f){
     RecordCall(d,where);
+    diagnosticReason[0]=0;
     try {if(SUCCEEDED(d->failure))f();}
     catch(const ErrorCode&e){d->Error(e.hr,where);}
     catch(const std::bad_alloc&){d->Error(E_OUTOFMEMORY,where);}
@@ -486,7 +487,7 @@ static uint32_t BlendFactor(D3D10_DDI_BLEND value,bool alpha){
     case 1:return 0;case 2:return 1;case 3:return 2;case 4:return 3;case 5:return 6;case 6:return 7;
     case 7:return 8;case 8:return 9;case 9:return 4;case 10:return 5;case 11:return 14;
     case 14:return alpha?12:10;case 15:return alpha?13:11;case 20:return 12;case 21:return 13;
-    default:SetDiagnosticReason("BlendFactor unsupported value=%u alpha=%u",unsigned(value),alpha?1u:0u);SetDiagnosticReason("Explicit DXGI_DDI_ERR_UNSUPPORTED throw");throw ErrorCode{DXGI_DDI_ERR_UNSUPPORTED};}
+    default:SetDiagnosticReason("BlendFactor unsupported value=%u alpha=%u",unsigned(value),alpha?1u:0u);if(!diagnosticReason[0])SetDiagnosticReason("Explicit DXGI_DDI_ERR_UNSUPPORTED throw");throw ErrorCode{DXGI_DDI_ERR_UNSUPPORTED};}
 }
 static ShaderBlend ShaderBlendState(Device*d){
     ShaderBlend state;
@@ -571,7 +572,7 @@ static void CompileProgram(Device*d,Program*p,Resource **resources){
         SetDiagnosticReason("CompileProgram shader stage=%u hash=0x%08x error=%s",unsigned(p->stage),DiagnosticProgramHash(p),error.c_str());
         CaptureShader(p->tokens.data(),static_cast<UINT>(p->tokens.size()),p->stage);LogCritical("Pi5D3D active shader: %s\n",error.c_str());
         if(p->loops)for(unsigned slot=0;slot<14;++slot)if(p->constants[slot].size()>=4)LogCritical("Pi5D3D loop constants slot=%u words=%zu first=%08x,%08x,%08x,%08x\n",slot,p->constants[slot].size(),p->constants[slot][0],p->constants[slot][1],p->constants[slot][2],p->constants[slot][3]);
-        SetDiagnosticReason("Explicit DXGI_DDI_ERR_UNSUPPORTED throw");throw ErrorCode{DXGI_DDI_ERR_UNSUPPORTED};}
+        if(!diagnosticReason[0])SetDiagnosticReason("Explicit DXGI_DDI_ERR_UNSUPPORTED throw");throw ErrorCode{DXGI_DDI_ERR_UNSUPPORTED};}
     if(p->loops)Log("Pi5D3D specialized shader code=%zu uniforms=%zu key-words=%zu\n",p->first.code.size(),p->first.uniforms.size(),p->first.specialized.size());
     p->compiled=true;
 }
@@ -655,7 +656,7 @@ static void DrawVertices(Device*d,const std::vector<UINT>&order,UINT instances,U
         entry.valid=false;std::string error;Shader linked;
         if(!CompileShaderTokens(d->vs->tokens.data(),d->vs->tokens.size(),ShaderStage::Vertex,linked,error,&d->ps->first.inputs,d->vs->loops?&d->vs->constants:nullptr)){
             SetDiagnosticReason("Linked vertex shader hash=0x%08x error=%s",DiagnosticProgramHash(d->vs),error.c_str());
-            LogCritical("Pi5D3D linked shader: %s\n",error.c_str());SetDiagnosticReason("Explicit DXGI_DDI_ERR_UNSUPPORTED throw");throw ErrorCode{DXGI_DDI_ERR_UNSUPPORTED};}
+            LogCritical("Pi5D3D linked shader: %s\n",error.c_str());if(!diagnosticReason[0])SetDiagnosticReason("Explicit DXGI_DDI_ERR_UNSUPPORTED throw");throw ErrorCode{DXGI_DDI_ERR_UNSUPPORTED};}
         entry.shader=std::move(linked);entry.inputs=d->ps->first.inputs;entry.valid=true;linkedProgram=&entry;
         Log("Pi5D3D linked vertex code=%zu uniforms=%zu\n",entry.shader.code.size(),entry.shader.uniforms.size());
     }
@@ -682,7 +683,7 @@ static void DrawVertices(Device*d,const std::vector<UINT>&order,UINT instances,U
         auto Address=[](D3D10_DDI_TEXTURE_ADDRESS_MODE mode)->UINT{
             switch(mode){case D3D10_DDI_TEXTURE_ADDRESS_WRAP:return Pi5Wrap;case D3D10_DDI_TEXTURE_ADDRESS_MIRROR:return Pi5Mirror;
             case D3D10_DDI_TEXTURE_ADDRESS_CLAMP:return Pi5Clamp;case D3D10_DDI_TEXTURE_ADDRESS_BORDER:return Pi5Border;
-            case D3D10_DDI_TEXTURE_ADDRESS_MIRRORONCE:return Pi5MirrorOnce;default:SetDiagnosticReason("Texture address mode unsupported mode=%u",unsigned(mode));SetDiagnosticReason("Explicit DXGI_DDI_ERR_UNSUPPORTED throw");throw ErrorCode{DXGI_DDI_ERR_UNSUPPORTED};}
+            case D3D10_DDI_TEXTURE_ADDRESS_MIRRORONCE:return Pi5MirrorOnce;default:SetDiagnosticReason("Texture address mode unsupported mode=%u",unsigned(mode));if(!diagnosticReason[0])SetDiagnosticReason("Explicit DXGI_DDI_ERR_UNSUPPORTED throw");throw ErrorCode{DXGI_DDI_ERR_UNSUPPORTED};}
         };
         UINT filter=UINT(sampler->Filter);x.Filter=(filter&4?PI5_FILTER_MAG_LINEAR:0)|(filter&0x10?PI5_FILTER_MIN_LINEAR:0)|(filter&1?PI5_FILTER_MIP_LINEAR:0);
         // Level-of-detail limits are u4.8 values relative to the view's most detailed mip.
@@ -725,7 +726,7 @@ static void DrawVertices(Device*d,const std::vector<UINT>&order,UINT instances,U
         for(UINT i=0;i<3;++i){const auto&p=*programs[i];uint32_t registers=0;
             bool valid=ValidateProgram(reinterpret_cast<const uint64_t*>(packet.data()+p.CodeOffset),p.CodeCount,reinterpret_cast<const uint32_t*>(packet.data()+p.UniformOffset),p.UniformCount,DrawProgramRules(c,i),nullptr,&registers);
             LogCritical("  program %u code=%u uniforms=%u constants=%u valid=%u registers=%08x\n",i,p.CodeCount,p.UniformCount,p.ConstantWords,valid,registers);}
-        SetDiagnosticReason("Explicit DXGI_DDI_ERR_UNSUPPORTED throw");throw ErrorCode{DXGI_DDI_ERR_UNSUPPORTED};
+        if(!diagnosticReason[0])SetDiagnosticReason("Explicit DXGI_DDI_ERR_UNSUPPORTED throw");throw ErrorCode{DXGI_DDI_ERR_UNSUPPORTED};
     }
 #endif
     d->Submit(packet.data(),c.Header.Bytes,resources,resourceCount);
