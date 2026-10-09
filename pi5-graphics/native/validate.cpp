@@ -44,7 +44,7 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
         unsigned scratch=unsigned((word>>46)&63);uint64_t store=code[at+2];unsigned reg=unsigned(store&63);
         if(store!=(UINT64_C(0x38002180be03f000)|(uint64_t(scratch)<<6)|reg))return 0;
         if(used>=uniformCount)return -1;uint32_t index=CheckedUniform(used);
-        if(index<16||index>=outputs||(written&(1u<<index))||reg==scratch||!Defined(defined,reg)||code[at+3]!=Nop)return -1;
+        if(index<16||index>=outputs||(written&(UINT64_C(1)<<index))||reg==scratch||!Defined(defined,reg)||code[at+3]!=Nop)return -1;
         ++used;defined|=UINT64_C(1)<<scratch;written|=UINT64_C(1)<<index;at+=4;return 1;
     };
     bool targetRead=false;
@@ -101,7 +101,7 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
         // A bounded immediate MOV reads the fixed 48-entry hardware table;
         // its source field is not a register or an address-bearing signal.
         {uint64_t word=code[at];unsigned dst=unsigned((word>>32)&63),immediate=unsigned((word>>6)&63);
-            if(dst<64&&immediate<48&&word==(Add(249,dst,immediate,3)|(UINT64_C(14)<<53))){defined|=1u<<dst;++at;continue;}
+            if(dst<64&&immediate<48&&word==(Add(249,dst,immediate,3)|(UINT64_C(14)<<53))){defined|=UINT64_C(1)<<dst;++at;continue;}
         }
         // Paired ALUs and an optional uniform load read the register state
         // before any of their distinct destinations are updated.
@@ -109,7 +109,7 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
             if(alu.valid&&alu.add+alu.mul+unsigned(alu.signal==12)>1){
                 if(alu.reads&~defined)return false;
                 if(alu.signal==12){if(used>=uniformCount)return false;++used;}
-                defined|=uint32_t(alu.writes);++at;continue;
+                defined|=alu.writes;++at;continue;
             }
         }
         // One source may use the fixed small-immediate table. Admit only
@@ -118,13 +118,13 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
             if(signal==14||signal==15){unsigned op=unsigned((word>>24)&255),dst=unsigned((word>>32)&63),a=unsigned((word>>6)&63),b=unsigned(word&63);
                 if(dst<64&&BinaryOp(op)&&word==(Add(op,dst,a,b)|(uint64_t(signal)<<53))){
                     if(signal==14?(a>=48||!Defined(defined,b)):(b>=48||!Defined(defined,a)))return false;
-                    defined|=1u<<dst;++at;continue;
+                    defined|=UINT64_C(1)<<dst;++at;continue;
                 }
             }
             if(signal==30||signal==31){unsigned dst=unsigned((word>>38)&63),a=unsigned((word>>18)&63),b=unsigned((word>>12)&63);
                 if(dst>=64||word!=(Mul(21,dst,a,b)|(uint64_t(signal)<<53))||
                     (signal==30?(a>=48||!Defined(defined,b)):(b>=48||!Defined(defined,a))))return false;
-                defined|=1u<<dst;++at;continue;
+                defined|=UINT64_C(1)<<dst;++at;continue;
             }
         }
         // Bounded, adjacent conditional copy. Every input is defined before
@@ -134,7 +134,7 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
                 if(!Defined(defined,mask)||!Defined(defined,value)||words-at<2)return false;
                 uint64_t last=code[at+1];unsigned source=unsigned(last&63);
                 if(dst==source||!Defined(defined,source)||last!=(Add(182,dst,source,source)|(UINT64_C(0x28)<<46)))return false;
-                defined|=1u<<dst;at+=2;continue;
+                defined|=UINT64_C(1)<<dst;at+=2;continue;
             }
         }
         // A paired flag test and integer zero is followed immediately by its
@@ -148,7 +148,7 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
                 bool copy=normalize&&last==(Add(182,dst,a,a)|(UINT64_C(0x28)<<46));
                 bool mask=last==(Add(186,dst,dst,0)|(UINT64_C(0x20)<<46))||last==(Add(186,dst,dst,0)|(UINT64_C(0x28)<<46));
                 if(!copy&&!mask)return false;
-                defined|=1u<<dst;at+=2;continue;
+                defined|=UINT64_C(1)<<dst;at+=2;continue;
             }
         }
         // Float comparison normalization: test exponent bits, clear the
@@ -157,7 +157,7 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
             if(dst<64&&word==(Add(181,dst,a,b)|(UINT64_C(1)<<46))){
                 if(!Defined(defined,a)||!Defined(defined,b)||dst==a||dst==b||words-at<3||
                    code[at+1]!=Add(183,dst,dst,dst)||code[at+2]!=(Add(182,dst,a,a)|(UINT64_C(0x28)<<46)))return false;
-                defined|=1u<<dst;at+=3;continue;
+                defined|=UINT64_C(1)<<dst;at+=3;continue;
             }
         }
         // Comparisons are an indivisible three-instruction form: the ALU sets
@@ -167,7 +167,7 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
             if(dst<64&&((operation==197&&flag>=1&&flag<=3)||(operation==183&&flag==1)||((operation==120||operation==60)&&flag==3))&&word==(Add(operation,dst,a,b)|(uint64_t(flag)<<46))){
                 if(!Defined(defined,a)||!Defined(defined,b)||dst==a||dst==b||words-at<3||code[at+1]!=Add(183,dst,a,a))return false;
                 uint64_t last=code[at+2];if(last!=(Add(186,dst,dst,0)|(UINT64_C(0x20)<<46))&&last!=(Add(186,dst,dst,0)|(UINT64_C(0x28)<<46)))return false;
-                defined|=1u<<dst;at+=3;continue;
+                defined|=UINT64_C(1)<<dst;at+=3;continue;
             }
         }
         uint64_t word=code[at++];unsigned reg=0,nops=0;bool writes=true;
