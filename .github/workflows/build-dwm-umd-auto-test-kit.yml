@@ -1,9 +1,9 @@
-name: Build DWM UMD Draw Reason Auto Test Kit v2
+name: Build DWM Vertex Scalar 32 Fix Auto Test Kit v3
 
 on:
   push:
     branches:
-      - dwm-umd-draw-reason-diag-v2
+      - dwm-vertex-scalar-32-fix-v3
     paths:
       - 'pi5-graphics/**'
       - 'tools/dwm-umd-auto-test-kit/**'
@@ -25,7 +25,15 @@ jobs:
           $ErrorActionPreference='Stop'
           $base='c4d7a9feaeaa99f032547e33462ad056a4508c14'
           $product=@(git diff --name-only $base HEAD -- pi5-graphics)
-          $allowed=@('pi5-graphics/native/umd.cpp','pi5-graphics/native/umd.h')
+          $allowed=@(
+            'pi5-graphics/native/umd.cpp',
+            'pi5-graphics/native/umd.h',
+            'pi5-graphics/native/abi.h',
+            'pi5-graphics/native/shader.cpp',
+            'pi5-graphics/native/encode.cpp',
+            'pi5-graphics/native/validate.cpp',
+            'pi5-graphics/tests/encoder-revision-test.cpp'
+          )
           $unexpected=@($product|Where-Object {$_ -notin $allowed})
           if($unexpected.Count){throw ('Unexpected graphics product-code changes: '+($unexpected -join ', '))}
           python pi5-graphics/tests/check-universal-invariants.py
@@ -34,6 +42,10 @@ jobs:
           foreach($needle in @('PersistFirstFatal','RecordCall','umd-first-fatal-','unsupported-dxgi','RequireDiagnostic','diagnosticReason')){
             if($umd -notmatch [regex]::Escape($needle)){throw "Missing UMD diagnostic invariant: $needle"}
           }
+          $abi=Get-Content pi5-graphics/native/abi.h -Raw
+          if($abi -notmatch '#define\s+PI5_MAX_VERTEX_SCALARS\s+32u'){throw 'Vertex scalar limit is not 32'}
+          $validator=Get-Content pi5-graphics/native/validate.cpp -Raw
+          if($validator -notmatch 'UINT64_C\(63\)<<6'){throw 'QPU vertex attribute scalar mask is not six bits'}
 
       - name: Parse automatic test PowerShell
         shell: pwsh
@@ -98,7 +110,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          $root='Build\RPi5-DWM-UMD-Draw-Reason-Test-Kit-v2.0'
+          $root='Build\RPi5-DWM-Vertex-Scalar-32-Fix-Test-Kit-v3.0'
           $payload=Join-Path $root 'Payload\Graphics'
           New-Item $root,$payload -ItemType Directory -Force | Out-Null
 
@@ -109,13 +121,15 @@ jobs:
           Copy-Item Build\Farjanatech-RPi5-DWM-UMD-Diagnostic-Test.cer $payload -Force
 
           @(
-            'RPi5 DWM UMD Draw Reason Test Kit v2.0',
+            'RPi5 DWM Vertex Scalar 32 Fix Test Kit v3.0',
             ('Branch: '+$env:GITHUB_REF_NAME),
             ('Commit: '+$env:GITHUB_SHA),
             'Universal Graphics base: c4d7a9feaeaa99f032547e33462ad056a4508c14',
-            'Graphics product-code delta: pi5-graphics/native/umd.cpp + umd.h only.',
+            'Causal evidence: 938/938 v2 fatals rejected vertex shader 0x7e103b42 with vertex attribute scalar limit exceeded.',
+            'Fix: extend the simple Pi5D3D vertex-input path coherently from 16 to 32 scalar components.',
+            'The implementation intentionally remains below Mesa V3D''s broader capability because this UMD currently keeps live vertex inputs in one 32-register QPU bank.',
+            'v2 first-fatal diagnostics remain enabled to expose any next unsupported operation.',
             'Build configuration: Release ARM64',
-            'Diagnostic delta: exact failed Require expression/source line or shader compiler reason is persisted before DWM exits.',
             'Automatic flow: install -> reboot -> record -> open Date & time -> finalize -> exact-INF rollback -> verify.'
           ) | Set-Content (Join-Path $root 'BUILD-PROVENANCE.txt') -Encoding UTF8
 
@@ -123,12 +137,12 @@ jobs:
             '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),($_.FullName.Substring((Resolve-Path $root).Path.Length+1).Replace('\','/'))
           } | Set-Content (Join-Path $root 'SHA256SUMS.txt') -Encoding ASCII
 
-          $zip='Build\RPi5-DWM-UMD-Draw-Reason-Test-Kit-v2.0.zip'
+          $zip='Build\RPi5-DWM-Vertex-Scalar-32-Fix-Test-Kit-v3.0.zip'
           Compress-Archive -Path "$root\*" -DestinationPath $zip -CompressionLevel Optimal -Force
           Get-FileHash $zip -Algorithm SHA256 | Format-List
 
       - uses: actions/upload-artifact@v4
         with:
-          name: RPi5-DWM-UMD-Draw-Reason-Test-Kit-v2.0
-          path: Build/RPi5-DWM-UMD-Draw-Reason-Test-Kit-v2.0.zip
+          name: RPi5-DWM-Vertex-Scalar-32-Fix-Test-Kit-v3.0
+          path: Build/RPi5-DWM-Vertex-Scalar-32-Fix-Test-Kit-v3.0.zip
           if-no-files-found: error
