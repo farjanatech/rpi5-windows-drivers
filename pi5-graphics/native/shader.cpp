@@ -456,11 +456,11 @@ class Compiler {
         bool comparison = op == 24 || op == 29 || op == 49 || op == 57 || (op >= 32 && op <= 34) || op == 39 || op == 79 || op == 80;
         bool integer = op == 30 || op == 35 || op == 36 || op == 37 || op == 40 || op == 41 || op == 42 || op == 59 || (op >= 82 && op <= 85) ||
                        (op >= 32 && op <= 34) || op == 39 || op == 79 || op == 80;
-        bool unary = op == 54 || op == 27 || op == 28 || op == 40 || op == 43 || op == 86 || op == 59 || op == 26 || (op >= 64 && op <= 68) || op == 11 || op == 12;
+        bool unary = op == 54 || op == 27 || op == 28 || op == 40 || op == 43 || op == 86 || op == 59 || op == 26 || (op >= 64 && op <= 68) || op == 75 || op == 11 || op == 12;
         unsigned count = unary ? 1 : op == 50 || op == 35 || op == 82 ? 3 : 2;
         Need(op == 0 || op == 1 || (op >= 15 && op <= 17) || op == 50 || op == 51 ||
              op == 14 || op == 30 || op == 40 || op == 52 || op == 54 || op == 56 || op == 60 || op == 87 || op == 27 || op == 28 || op == 43 || op == 86 ||
-             integer || comparison || op == 26 || (op >= 64 && op <= 68) || ((op == 11 || op == 12) && stage == ShaderStage::Pixel),"unsupported DXBC opcode");
+             integer || comparison || op == 26 || (op >= 64 && op <= 68) || op == 75 || ((op == 11 || op == 12) && stage == ShaderStage::Pixel),"unsupported DXBC opcode");
         Need(!(token & 0x00ffd800u),"unsupported instruction controls");
         Need((!integer && !comparison) || !(token & 0x2000),"integer arithmetic cannot saturate");
         Operand d = ReadOperand(r,true), sources[3];
@@ -493,6 +493,7 @@ class Compiler {
                 case 66: result[c] = Binary(Op::Ceil,a,a); break;
                 case 67: result[c] = Binary(Op::Trunc,a,a); break;
                 case 68: result[c] = Binary(Op::Rsqrt,a,a); break;
+                case 75: {uint32_t rsq=Binary(Op::Rsqrt,a,a);result[c]=Binary(Op::Reciprocal,rsq,rsq);break;}
                 case 11: result[c] = Binary(Op::Fdx,a,a); break;
                 case 12: result[c] = Binary(Op::Fdy,a,a); break;
                 case 35: case 82: result[c] = Binary(Op::Iadd,Binary(Op::Imul,a,b),Read(sources[2],c,true)); break;
