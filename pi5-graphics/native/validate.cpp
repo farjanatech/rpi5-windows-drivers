@@ -185,7 +185,7 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
             if(reg<32&&word==Add(op,reg,a,b)){
                 if(!Defined(defined,a))return false;
                 if(BinaryOp(op)){if(!Defined(defined,b))return false;}
-                else if(op==188){if(b!=32&&b!=33)return false;nops=1;}
+                else if(op==188){if(b!=32&&b!=33&&b!=34&&b!=35)return false;nops=1;}
                 else if(op==246){if(b!=32&&b!=36&&b!=4&&b!=20)return false;if((b==4||b==20)&&stage!=ProgramStage::Pixel)return false;}
                 else if(op==245){if(b!=7&&b!=23&&b!=39&&b!=4&&b!=20&&b!=36&&b!=52)return false;}
                 else return false;
