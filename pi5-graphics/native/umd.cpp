@@ -183,10 +183,10 @@ static void CaptureShader(const UINT*code,UINT words,ShaderStage stage){
     (void)code;(void)words;(void)stage;
 #endif
 }
-static void RequireDiagnostic1(bool value,const char*expression,ULONG line){
+[[maybe_unused]] static void RequireDiagnostic1(bool value,const char*expression,ULONG line){
     if(!value){SetDiagnosticReason("Require line=%lu expr=%s",line,expression);throw ErrorCode{E_INVALIDARG};}
 }
-static void RequireDiagnostic2(bool value,HRESULT hr,const char*expression,ULONG line){
+[[maybe_unused]] static void RequireDiagnostic2(bool value,HRESULT hr,const char*expression,ULONG line){
     if(!value){SetDiagnosticReason("Require line=%lu hr=0x%08lx expr=%s",line,static_cast<ULONG>(hr),expression);throw ErrorCode{hr};}
 }
 #define PI5_REQUIRE_PICK(_1,_2,NAME,...) NAME
