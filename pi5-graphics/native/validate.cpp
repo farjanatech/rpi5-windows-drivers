@@ -20,7 +20,7 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
     if(patches)*patches={};if(registers)*registers=0;if(usedBindings)*usedBindings=0;uint32_t samples=0,constantSamples=0,bindingsUsed=0,bindingsDeclared=0;
     const auto stage=rules.stage;const uint32_t varyingScalars=rules.varyingScalars,nonPerspectiveMask=rules.nonPerspectiveMask,flatMask=rules.flatMask;
     if(!code||!words||words>PI5_MAX_PROGRAM_WORDS||uniformCount>PI5_MAX_PROGRAM_UNIFORMS||(uniformCount&&!uniforms)||
-       static_cast<uint32_t>(stage)>2||rules.vertexScalars>16||varyingScalars>PI5_MAX_VARYINGS||nonPerspectiveMask>=(1u<<varyingScalars)||flatMask>=(1u<<varyingScalars)||(nonPerspectiveMask&flatMask)||
+       static_cast<uint32_t>(stage)>2||rules.vertexScalars>PI5_MAX_VERTEX_SCALARS||varyingScalars>PI5_MAX_VARYINGS||nonPerspectiveMask>=(1u<<varyingScalars)||flatMask>=(1u<<varyingScalars)||(nonPerspectiveMask&flatMask)||
        (stage!=ProgramStage::Pixel&&(nonPerspectiveMask||flatMask||rules.targetReads)))return false;
     for(unsigned b=0;b<PI5_BINDINGS;++b){if((rules.bindingKinds[b]&&rules.bindingKinds[b]!=Pi5BindingTexture&&!Pi5BufferElementBytes(rules.bindingKinds[b])))return false;if(rules.bindingKinds[b])bindingsDeclared|=1u<<b;}
     if(checkedUniforms)memset(checkedUniforms,0,uniformCount);
@@ -174,9 +174,9 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
         if(word==Nop)continue;
         if((word&~(UINT64_C(31)<<46))==UINT64_C(0x39803186bb03f000)){
             reg=unsigned((word>>46)&31);if(used>=uniformCount)return false;++used;
-        }else if((word&~((UINT64_C(31)<<32)|(UINT64_C(15)<<6)))==UINT64_C(0x39c02180bc03f000)){
+        }else if((word&~((UINT64_C(31)<<32)|(UINT64_C(63)<<6)))==UINT64_C(0x39c02180bc03f000)){
             nops=1;
-            reg=unsigned((word>>32)&31);if(stage==ProgramStage::Pixel||((word>>6)&15)>=rules.vertexScalars)return false;
+            reg=unsigned((word>>32)&31);if(stage==ProgramStage::Pixel||((word>>6)&63)>=rules.vertexScalars)return false;
         }else{
             unsigned op=unsigned((word>>24)&255),a=unsigned((word>>6)&63),b=unsigned(word&63);
             reg=unsigned((word>>32)&63);
@@ -326,7 +326,7 @@ bool ValidateCommand(const void *buffer,uint32_t bytes,const Pi5AllocationInfo *
         }else return false;
     }
     if(referenced!=(((1u<<count)-1)&~3u))return false;
-    if(c->Target||c->Vertices!=1||!c->VertexComponents||c->VertexComponents>16||c->VaryingScalars>PI5_MAX_VARYINGS||c->NonPerspectiveMask>=(1u<<c->VaryingScalars)||c->FlatMask>=(1u<<c->VaryingScalars)||(c->FlatMask&c->NonPerspectiveMask)||
+    if(c->Target||c->Vertices!=1||!c->VertexComponents||c->VertexComponents>PI5_MAX_VERTEX_SCALARS||c->VaryingScalars>PI5_MAX_VARYINGS||c->NonPerspectiveMask>=(1u<<c->VaryingScalars)||c->FlatMask>=(1u<<c->VaryingScalars)||(c->FlatMask&c->NonPerspectiveMask)||
        !c->VertexCount||c->VertexCount>4095||c->VertexCount%3||c->VertexStride<c->VertexComponents*4||c->VertexStride>4096||((c->VertexOffset|c->VertexStride)&3)||
        c->VertexOffset>=r[1].Width||uint64_t(c->VertexCount-1)*c->VertexStride+c->VertexComponents*4>r[1].Width-c->VertexOffset)return false;
     uint32_t viewport[6],fixed[4];memcpy(viewport,c->Viewport,sizeof(viewport));
