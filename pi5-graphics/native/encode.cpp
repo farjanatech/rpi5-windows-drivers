@@ -101,7 +101,7 @@ bool EncodeDrawBatch(const Draw *draws,uint32_t count,uint32_t base,void *buffer
              d.pitch >= d.width * 4 && d.pitch <= 65536 && !(d.pitch & 3),"invalid render surface dimensions");
         Need(d.vertexScalars && d.vertexScalars<=PI5_MAX_VERTEX_SCALARS && d.vertexCount && d.vertexCount <= 4096 && !(d.vertexCount % 3) && d.vertexStride >= d.vertexScalars*4 &&
              d.vertexStride <= 4096 && !(d.vertexStride & 3),"invalid triangle vertex range");
-        Need(d.varyingScalars<=PI5_MAX_VARYINGS&&d.nonPerspectiveMask<(1u<<d.varyingScalars)&&d.flatMask<(1u<<d.varyingScalars)&&!(d.flatMask&d.nonPerspectiveMask),"invalid varying count or interpolation mask");
+        Need(Pi5ValidVaryingMasks(d.varyingScalars,d.nonPerspectiveMask,d.flatMask),"invalid varying count or interpolation mask");
         bool viewportSet=(d.viewport[0]|d.viewport[1]|d.viewport[2]|d.viewport[3])!=0;
         uint32_t viewportFixed[4]={};
         if(viewportSet)Need(Pi5ViewportRect(d.viewport,d.width,d.height,viewportFixed),"invalid viewport rectangle");
@@ -207,9 +207,19 @@ bool EncodeDrawBatch(const Draw *draws,uint32_t count,uint32_t base,void *buffer
         if(item.pipeline.Flags&1){const auto &b=item.pipeline.Blend;w.Begin(84,5);w.Bits(8,4,b[5]);w.Bits(12,4,b[3]);w.Bits(16,4,b[4]);w.Bits(20,4,b[2]);w.Bits(24,4,b[0]);w.Bits(28,4,b[1]);w.Bits(32,8,1);
             w.Begin(86,9);for(unsigned i=0;i<4;++i)w.Bits(8+i*16,16,item.pipeline.Constant[i]);}
         w.Begin(91,5);w.Bits(8,4,15);w.Bits(24,16,0x3f80);
-        w.Begin(97,1);if(item.flatMask){w.Begin(98,5);w.Bits(16,24,item.flatMask);w.Bits(12,2,1);w.Bits(14,2,1);}
-        w.Begin(99,1);
-        if(item.nonPerspectiveMask){w.Begin(100,5);w.Bits(16,24,item.nonPerspectiveMask);w.Bits(12,2,1);w.Bits(14,2,1);}
+        // Each hardware interpolation-flags packet covers 24 varyings. Clear
+        // the full state, then write each nonzero 24-scalar chunk at V0=chunk.
+        // This matches Mesa's offset model while keeping our 32-bit UMD masks.
+        auto VaryingFlags=[&](unsigned zeroCode,unsigned flagsCode,uint32_t mask){
+            w.Begin(zeroCode,1);
+            for(unsigned chunk=0;chunk<(PI5_MAX_VARYINGS+PI5_VARYING_FLAG_CHUNK-1)/PI5_VARYING_FLAG_CHUNK;++chunk){
+                uint32_t bits=chunk?mask>>PI5_VARYING_FLAG_CHUNK:mask&0x00ffffffu;
+                if(!bits)continue;
+                w.Begin(flagsCode,5);w.Bits(8,4,chunk);w.Bits(16,24,bits);
+            }
+        };
+        VaryingFlags(97,98,item.flatMask);
+        VaryingFlags(99,100,item.nonPerspectiveMask);
         w.Begin(88,1);
         w.Begin(71,2);w.Bits(8,8,0x22);
         w.Begin(64,5);w.Bits(8,32,records[n] | ((item.vertexScalars+3)/4));
