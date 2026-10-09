@@ -603,7 +603,7 @@ static std::vector<UINT> VertexOrder(Device*d,UINT count,UINT first,bool indexed
 static UINT GatherVertices(Device*d,const std::vector<UINT>&order,UINT instances,UINT firstInstance,UINT instanceBase,UINT vertexIdBias){
     Require(!order.empty()&&instances&&uint64_t(order.size())*instances<=4095,DXGI_DDI_ERR_UNSUPPORTED);UINT orderCount=static_cast<UINT>(order.size()),outputCount=orderCount*instances;const UINT*orderData=order.data();
     const auto&masks=d->vs->first.inputs;UINT scalars=0;for(UINT mask:masks)for(UINT c=0;c<4;++c)scalars+=(mask>>c)&1;
-    Require(scalars<=16,DXGI_DDI_ERR_UNSUPPORTED);scalars=std::max(scalars,1u);d->gatheredVertices.resize(size_t(outputCount)*scalars*4);auto packed=reinterpret_cast<UINT*>(d->gatheredVertices.data());memset(packed,0,d->gatheredVertices.size());
+    Require(scalars<=PI5_MAX_VERTEX_SCALARS,DXGI_DDI_ERR_UNSUPPORTED);scalars=std::max(scalars,1u);d->gatheredVertices.resize(size_t(outputCount)*scalars*4);auto packed=reinterpret_cast<UINT*>(d->gatheredVertices.data());memset(packed,0,d->gatheredVertices.size());
     UINT field=0;
     for(UINT reg=0;reg<masks.size();++reg){if(!masks[reg])continue;UINT fields=0,ordinary=masks[reg];
         for(UINT c=0;c<4;++c)if(masks[reg]&(1u<<c)){
