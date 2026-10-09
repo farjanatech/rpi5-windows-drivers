@@ -699,7 +699,22 @@ Shader Compiler::Emit() {
         }
         if(before<varyingScalars&&loadedVaryings==varyingScalars)occupied[0]=occupied[3]=false;
     };
-    auto Ensure=[&](uint32_t node){if(node<nodes.size()&&nodes[node].op==Op::Uniform&&nodes[node].uniform.kind==UniformKind::FragmentVarying)LoadVaryings(nodes[node].uniform.value);};
+    unsigned liveVertexAttributes=0,loadedVertexAttributes=0;
+    for(uint32_t i=0;i<nodes.size();++i)
+        if(live[i]&&nodes[i].op==Op::Uniform&&nodes[i].uniform.kind==UniformKind::VertexAttribute)++liveVertexAttributes;
+    auto LoadVertexAttribute=[&](uint32_t node){
+        if(stage==ShaderStage::Pixel||node>=nodes.size()||nodes[node].op!=Op::Uniform||
+           nodes[node].uniform.kind!=UniformKind::VertexAttribute||registers[node]!=Missing)return;
+        unsigned reg=0;while(reg<32&&occupied[reg])++reg;Need(reg<32,"vertex attribute register pressure exceeded");
+        occupied[reg]=true;registers[node]=reg;uniformValue[reg]=Missing;
+        result.code.push_back(UINT64_C(0x39c02180bc03f000)|(uint64_t(reg)<<32)|(uint64_t(nodes[node].uniform.value)<<6));
+        result.code.push_back(Nop);++loadedVertexAttributes;
+    };
+    auto Ensure=[&](uint32_t node){
+        if(node>=nodes.size()||nodes[node].op!=Op::Uniform)return;
+        if(nodes[node].uniform.kind==UniformKind::FragmentVarying)LoadVaryings(nodes[node].uniform.value);
+        else if(nodes[node].uniform.kind==UniformKind::VertexAttribute)LoadVertexAttribute(node);
+    };
     // Literals, constants and draw parameters are reloaded from the uniform
     // stream at each use rather than occupying a register across the program.
     auto Reloaded=[&](uint32_t node){const auto&n=nodes[node];return n.op==Op::Uniform&&n.uniform.kind!=UniformKind::FragmentVarying&&n.uniform.kind!=UniformKind::VertexAttribute&&n.uniform.kind!=UniformKind::TargetColor;};
@@ -746,7 +761,7 @@ Shader Compiler::Emit() {
     // from a uniform loaded into a scratch register.
     std::vector<bool> outputWritten(roots.size());
     auto WriteOutputs=[&](){
-        if(stage==ShaderStage::Pixel)return;
+        if(stage==ShaderStage::Pixel||loadedVertexAttributes<liveVertexAttributes)return;
         for(unsigned c=0;c<roots.size();++c)if(!outputWritten[c]&&(registers[roots[c]]!=Missing||Reloaded(roots[c]))){
             bool constant=Reloaded(roots[c]);unsigned value=constant?LoadUniform(roots[c]):registers[roots[c]];
             if(c<16){result.code.push_back(UINT64_C(0x39c02180be03f000)|(uint64_t(c)<<6)|value);result.code.push_back(Nop);}
@@ -759,13 +774,10 @@ Shader Compiler::Emit() {
             outputWritten[c]=true;if(constant||!--uses[roots[c]])occupied[value]=false;
         }
     };
-    // Vertex inputs and outputs share one VPM segment, so every attribute is
-    // read before the first output store can overwrite it.
-    if(stage!=ShaderStage::Pixel)for(uint32_t i=0;i<nodes.size();++i)if(live[i]&&nodes[i].op==Op::Uniform&&nodes[i].uniform.kind==UniformKind::VertexAttribute){
-        unsigned reg=0;while(reg<32&&occupied[reg])++reg;Need(reg<32,"vertex attribute register pressure exceeded");occupied[reg]=true;registers[i]=reg;
-        uniformValue[reg]=Missing;
-        result.code.push_back(UINT64_C(0x39c02180bc03f000)|(uint64_t(reg)<<32)|(uint64_t(nodes[i].uniform.value)<<6));result.code.push_back(Nop);
-    }
+    // Vertex attributes are loaded lazily as their first consumer is reached.
+    // Input and output values share VPM storage, so WriteOutputs stays blocked
+    // until every live input scalar has been read at least once. This avoids
+    // pinning a 32-scalar vertex in all 32 QPU registers before uniform loads.
     WriteOutputs();
     bool targetRead=false;
     for (uint32_t i = 0; i < nodes.size(); ++i) if (live[i]) {
@@ -885,6 +897,15 @@ Shader Compiler::Emit() {
         WriteOutputs();
     }
     if (stage == ShaderStage::Pixel && varyingScalars) LoadVaryings(varyingScalars - 1);
+    if(stage!=ShaderStage::Pixel&&loadedVertexAttributes<liveVertexAttributes){
+        // Inputs used only as final outputs may not have an ALU consumer.
+        // Drain those remaining live VPM reads before permitting the first
+        // output store; attributes with future ALU uses are still resident.
+        for(uint32_t i=0;i<nodes.size();++i)
+            if(live[i]&&nodes[i].op==Op::Uniform&&nodes[i].uniform.kind==UniformKind::VertexAttribute&&registers[i]==Missing)
+                LoadVertexAttribute(i);
+    }
+    WriteOutputs();
     for (unsigned c = 0; c < roots.size(); ++c) Need(stage == ShaderStage::Pixel || outputWritten[c],"vertex output was not produced");
     std::vector<unsigned> colors;
     if (stage == ShaderStage::Pixel) for (auto root : roots) colors.push_back(Reloaded(root) ? LoadUniform(root) : registers[root]);
