@@ -39,7 +39,7 @@ static bool has_opcode(ID3DBlob *blob, uint32_t wanted)
     return false;
 }
 
-static int compile_shader(const char *source, bool requireSqrt, uint32_t expectedVaryings)
+static int compile_shader(const char *source, uint32_t requiredOpcode, uint32_t expectedVaryings)
 {
     ID3DBlob *blob = nullptr, *errors = nullptr;
     HRESULT hr = D3DCompile(source, std::strlen(source), "test", nullptr, nullptr, "main", "ps_4_0",
@@ -51,8 +51,8 @@ static int compile_shader(const char *source, bool requireSqrt, uint32_t expecte
         return 1;
     }
     if (errors) errors->Release();
-    if (requireSqrt && !has_opcode(blob, 75)) {
-        std::puts("FAIL: HLSL compiler did not emit DXBC SQRT opcode 75");
+    if (requiredOpcode && !has_opcode(blob, requiredOpcode)) {
+        std::printf("FAIL: HLSL compiler did not emit required DXBC opcode %u\n", requiredOpcode);
         blob->Release();
         return 2;
     }
@@ -77,7 +77,7 @@ int main()
 {
     const char *sqrtShader =
         "float4 main(float4 a : TEXCOORD0) : SV_Target { return sqrt(a); }";
-    if (int r = compile_shader(sqrtShader, true, 4)) return r;
+    if (int r = compile_shader(sqrtShader, 75, 4)) return r;
 
     const char *varyingShader =
         "struct I {"
@@ -87,8 +87,16 @@ int main()
         "float4 main(I i) : SV_Target {"
         " return i.a0+i.a1+i.a2+i.a3+i.a4+i.a5+i.a6+i.a7;"
         "}";
-    if (int r = compile_shader(varyingShader, false, 32)) return 10 + r;
+    if (int r = compile_shader(varyingShader, 0, 32)) return 10 + r;
 
-    std::puts("Pi5 shader SQRT + 32-varying regression: PASS");
+    const char *expLogShader =
+        "float4 main(float4 a : TEXCOORD0) : SV_Target {"
+        " float4 x = abs(a) + 2.0;"
+        " return exp2(a * 0.25) + log2(x);"
+        "}";
+    if (int r = compile_shader(expLogShader, 25, 4)) return 20 + r;
+    if (int r = compile_shader(expLogShader, 47, 4)) return 30 + r;
+
+    std::puts("Pi5 shader SQRT + EXP + LOG + 32-varying regression: PASS");
     return 0;
 }
