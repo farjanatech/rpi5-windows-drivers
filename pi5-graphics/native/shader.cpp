@@ -68,7 +68,7 @@ Operand ReadOperand(Reader &r, bool destination,unsigned depth=0) {
     return o;
 }
 
-enum class Op { Uniform, Add, Sub, Iadd, Isub, Mul, Min, Max, And, Or, Xor, Itof, Utof, Ftoi, Ftou, Ftoin, Reciprocal, Texture,
+enum class Op { Uniform, Add, Sub, Iadd, Isub, Mul, Min, Max, And, Or, Xor, Itof, Utof, Ftoi, Ftou, Ftoin, Reciprocal, Exp, Log, Texture,
                 Shl, Shr, Asr, Imin, Imax, Umin, Umax, Imul, Rsqrt, Round, Trunc, Floor, Ceil, Fdx, Fdy, Feq, Fne, Flt, Fge, Ieq, Ine, Ilt, Ult, Ftz, Fzeq, Fzne, Select };
 struct Node { Op op; uint32_t a, b; Uniform uniform; uint32_t c=Missing; };
 // Sample and Fetch2D write TMUT then TMUS/TMUSF; Fetch1D writes only TMUSF.
@@ -456,11 +456,11 @@ class Compiler {
         bool comparison = op == 24 || op == 29 || op == 49 || op == 57 || (op >= 32 && op <= 34) || op == 39 || op == 79 || op == 80;
         bool integer = op == 30 || op == 35 || op == 36 || op == 37 || op == 40 || op == 41 || op == 42 || op == 59 || (op >= 82 && op <= 85) ||
                        (op >= 32 && op <= 34) || op == 39 || op == 79 || op == 80;
-        bool unary = op == 54 || op == 27 || op == 28 || op == 40 || op == 43 || op == 86 || op == 59 || op == 26 || (op >= 64 && op <= 68) || op == 75 || op == 11 || op == 12;
+        bool unary = op == 54 || op == 27 || op == 28 || op == 40 || op == 43 || op == 86 || op == 59 || op == 26 || op == 25 || op == 47 || (op >= 64 && op <= 68) || op == 75 || op == 11 || op == 12;
         unsigned count = unary ? 1 : op == 50 || op == 35 || op == 82 ? 3 : 2;
         Need(op == 0 || op == 1 || (op >= 15 && op <= 17) || op == 50 || op == 51 ||
              op == 14 || op == 30 || op == 40 || op == 52 || op == 54 || op == 56 || op == 60 || op == 87 || op == 27 || op == 28 || op == 43 || op == 86 ||
-             integer || comparison || op == 26 || (op >= 64 && op <= 68) || op == 75 || ((op == 11 || op == 12) && stage == ShaderStage::Pixel),"unsupported DXBC opcode");
+             integer || comparison || op == 26 || op == 25 || op == 47 || (op >= 64 && op <= 68) || op == 75 || ((op == 11 || op == 12) && stage == ShaderStage::Pixel),"unsupported DXBC opcode");
         Need(!(token & 0x00ffd800u),"unsupported instruction controls");
         Need((!integer && !comparison) || !(token & 0x2000),"integer arithmetic cannot saturate");
         Operand d = ReadOperand(r,true), sources[3];
@@ -493,6 +493,8 @@ class Compiler {
                 case 66: result[c] = Binary(Op::Ceil,a,a); break;
                 case 67: result[c] = Binary(Op::Trunc,a,a); break;
                 case 68: result[c] = Binary(Op::Rsqrt,a,a); break;
+                case 25: result[c] = Binary(Op::Exp,a,a); break;
+                case 47: result[c] = Binary(Op::Log,a,a); break;
                 case 75: {uint32_t rsq=Binary(Op::Rsqrt,a,a);result[c]=Binary(Op::Reciprocal,rsq,rsq);break;}
                 case 11: result[c] = Binary(Op::Fdx,a,a); break;
                 case 12: result[c] = Binary(Op::Fdy,a,a); break;
@@ -855,8 +857,9 @@ Shader Compiler::Emit() {
                 result.code.push_back(Nop);
                 word = Nop & ~((UINT64_C(63) << 58) | (UINT64_C(1) << 45) | (UINT64_C(63) << 38) | (UINT64_C(4095) << 12));
                 result.code.push_back(word | (UINT64_C(3) << 58) | (uint64_t(reg) << 38) | (uint64_t(a) << 18) | (uint64_t(b) << 12));
-            } else if (n.op == Op::Reciprocal || n.op == Op::Rsqrt) {
-                result.code.push_back(Add(188,reg,a,n.op == Op::Rsqrt ? 33 : 32));
+            } else if (n.op == Op::Reciprocal || n.op == Op::Rsqrt || n.op == Op::Exp || n.op == Op::Log) {
+                unsigned selector=n.op==Op::Reciprocal?32:n.op==Op::Rsqrt?33:n.op==Op::Exp?34:35;
+                result.code.push_back(Add(188,reg,a,selector));
             } else if (n.op == Op::Round || n.op == Op::Trunc || n.op == Op::Floor || n.op == Op::Ceil || n.op == Op::Fdx || n.op == Op::Fdy) {
                 // Selector: operation base, unpacked 32-bit input (bit 2), unpacked output.
                 bool derivative = n.op == Op::Fdx || n.op == Op::Fdy;
@@ -878,7 +881,7 @@ Shader Compiler::Emit() {
         }
         // V3D 7.1 register-file SFU results have a two-instruction latency.
         // Keep one unpaired gap; MULTOP/UMUL24 also retains its trailing gap.
-        if (n.op == Op::Reciprocal || n.op == Op::Rsqrt || n.op == Op::Imul) result.code.push_back(Nop);
+        if (n.op == Op::Reciprocal || n.op == Op::Rsqrt || n.op == Op::Exp || n.op == Op::Log || n.op == Op::Imul) result.code.push_back(Nop);
         WriteOutputs();
     }
     if (stage == ShaderStage::Pixel && varyingScalars) LoadVaryings(varyingScalars - 1);
