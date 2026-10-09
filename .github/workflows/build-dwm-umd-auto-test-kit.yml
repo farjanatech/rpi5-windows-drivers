@@ -115,7 +115,8 @@ jobs:
             'Universal Graphics base: c4d7a9feaeaa99f032547e33462ad056a4508c14',
             'Graphics product-code delta: pi5-graphics/native/umd.cpp + umd.h only.',
             'Build configuration: Release ARM64',
-            'Diagnostic delta: exact failed Require expression/source line or shader compiler reason is persisted before DWM exits.',\n            'Automatic flow: install -> reboot -> record -> open Date & time -> finalize -> exact-INF rollback -> verify.'
+            'Diagnostic delta: exact failed Require expression/source line or shader compiler reason is persisted before DWM exits.',
+            'Automatic flow: install -> reboot -> record -> open Date & time -> finalize -> exact-INF rollback -> verify.'
           ) | Set-Content (Join-Path $root 'BUILD-PROVENANCE.txt') -Encoding UTF8
 
           Get-ChildItem $root -Recurse -File | Sort-Object FullName | ForEach-Object {
