@@ -99,6 +99,61 @@ static int test_vertex_scalars(uint32_t scalars, bool expected)
     return 0;
 }
 
+
+static int test_varying_flag_chunks()
+{
+    uint8_t storage[256 * 1024] = {};
+    pi5::Draw d = {};
+    d.width = 64;
+    d.height = 64;
+    d.pitch = 64 * 4;
+    d.target = 0x00200000;
+    d.tile = 0x00300000;
+    d.coordinateCode = 0x00400000;
+    d.vertexCode = 0x00500000;
+    d.pixelCode = 0x00600000;
+    d.coordinateUniforms = 0x00700000;
+    d.vertexUniforms = 0x00710000;
+    d.pixelUniforms = 0x00720000;
+    d.vertexAddress = 0x00800000;
+    d.vertexStride = 24;
+    d.vertexCount = 3;
+    d.vertexScalars = 6;
+    d.varyingScalars = 32;
+    d.flatMask = (1u << 1) | (1u << 25);
+    d.nonPerspectiveMask = 1u << 30;
+    d.v3dRevision = 6;
+
+    pi5::EncodedCommands out = {};
+    const char *error = nullptr;
+    if (!pi5::EncodeDrawBatch(&d, 1, 0x00100000, storage, sizeof(storage), out, error)) {
+        std::printf("FAIL varying chunks: %s\n", error ? error : "<none>");
+        return 1;
+    }
+    const uint32_t begin = out.binStart - 0x00100000;
+    const uint32_t end = out.binEnd - 0x00100000;
+    auto Has = [&](const uint8_t expected[5]) {
+        for (uint32_t off = begin; off + 5 <= end; ++off)
+            if (!std::memcmp(storage + off, expected, 5)) return true;
+        return false;
+    };
+    const uint8_t flat0[5] = {98, 0, 0x02, 0, 0};
+    const uint8_t flat1[5] = {98, 1, 0x02, 0, 0};
+    const uint8_t noperspective1[5] = {100, 1, 0x40, 0, 0};
+    if (!Has(flat0) || !Has(flat1) || !Has(noperspective1)) {
+        std::puts("FAIL varying chunks: expected offset packets were not emitted");
+        return 2;
+    }
+
+    d.varyingScalars = 33;
+    if (pi5::EncodeDrawBatch(&d, 1, 0x00100000, storage, sizeof(storage), out, error)) {
+        std::puts("FAIL varying chunks: 33 scalars unexpectedly accepted");
+        return 3;
+    }
+    std::puts("PASS varying chunks: 32 accepted across two 24-scalar packets; 33 rejected");
+    return 0;
+}
+
 int main()
 {
     if (test_revision(6,  0x02, 0x12, 0x04)) return 1;
@@ -108,6 +163,7 @@ int main()
     if (test_vertex_scalars(17, true)) return 1;
     if (test_vertex_scalars(32, true)) return 1;
     if (test_vertex_scalars(33, false)) return 1;
+    if (test_varying_flag_chunks()) return 1;
 
     pi5::Draw defaults = {};
     if (defaults.v3dRevision != 10) {
