@@ -272,7 +272,7 @@ class Compiler {
             for (unsigned reg = 0; reg <= o.index[0]; ++reg)
                 for (unsigned component = 0; component < (reg == o.index[0] ? c : 4); ++component)
                     if (inputMasks[reg] & (1u << component)) ++scalar;
-            Need(scalar < (stage==ShaderStage::Pixel?PI5_MAX_VARYINGS:16u),stage==ShaderStage::Pixel?"varying scalar limit exceeded":"vertex attribute scalar limit exceeded");
+            Need(scalar < (stage==ShaderStage::Pixel?PI5_MAX_VARYINGS:PI5_MAX_VERTEX_SCALARS),stage==ShaderStage::Pixel?"varying scalar limit exceeded":"vertex attribute scalar limit exceeded");
             v = UniformNode(stage==ShaderStage::Pixel?UniformKind::FragmentVarying:UniformKind::VertexAttribute,scalar);
         } else if (o.type == 4) v = Literal(o.value[c]);
         else if (o.type == 8) {
