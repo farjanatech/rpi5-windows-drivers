@@ -676,6 +676,7 @@ Shader Compiler::Emit() {
     // Reuse those bits without reserving registers or extending live ranges.
     uint32_t uniformValue[64];std::fill(std::begin(uniformValue),std::end(uniformValue),Missing);
     std::vector<bool> sampleEmitted(lookups.size());
+    bool internalThreadSwitch=false;
     // RF3 is the pixel-centre W payload; each LDVARY also writes coefficient C to RF0.
     // Varyings must be read in order, but each is loaded only when first needed
     // and interpolated in its own register, keeping register pressure low.
@@ -828,6 +829,7 @@ Shader Compiler::Emit() {
             result.uniforms.push_back({constant?UniformKind::ConstantSamplerConfig:UniformKind::SamplerConfig,constant?PI5_CONSTANT_SAMPLER_TOKEN:PI5_SAMPLER_TOKEN|token,binding});
             if(lookup.kind!=Lookup::Fetch1D)result.code.push_back(Add(182,34,b,b,true));
             result.code.insert(result.code.end(),{Add(182,lookup.kind==Lookup::Sample||constant?33:41,a,a,true),Nop,Switch,Nop,Nop,Nop});
+            internalThreadSwitch=true;
             for(unsigned c=0;c<lookup.words;++c){uniformValue[destinations[c]]=Missing;result.code.push_back(UINT64_C(0x38803186bb03f000)|(uint64_t(destinations[c])<<46));}
             unsigned consumers=0;for(unsigned c=0;c<lookup.words;++c)consumers+=live[lookup.values[c]];
             Release(coordinates,n.a,n.b,consumers);
@@ -913,7 +915,14 @@ Shader Compiler::Emit() {
     for (unsigned c = 0; c < roots.size(); ++c) Need(stage == ShaderStage::Pixel || outputWritten[c],"vertex output was not produced");
     std::vector<unsigned> colors;
     if (stage == ShaderStage::Pixel) for (auto root : roots) colors.push_back(Reloaded(root) ? LoadUniform(root) : registers[root]);
-    if(!targetRead)result.code.insert(result.code.end(),{Switch,Switch,Nop});
+    // V3D 4.x non-fragment shaders can start directly in the post-last-THRSW
+    // section. For the RF32-RF63 fallback with no internal TMU switch, do not
+    // emit the old consecutive THRSW pair after VPM stores: with the matching
+    // shader-state final-section bit, the remaining THRSW is the program-end
+    // switch and its two delay slots. Keeping the pair would create a second
+    // "last THRSW" after the shader already started in its final section.
+    const bool finalSectionVertex=stage==ShaderStage::Vertex&&registerLimit==64&&!internalThreadSwitch;
+    if(!targetRead&&!finalSectionVertex)result.code.insert(result.code.end(),{Switch,Switch,Nop});
     for (unsigned c = 0; c < colors.size(); ++c) result.code.push_back(Add(182,c ? 7 : 8,colors[c],colors[c],true));
     if (stage == ShaderStage::Pixel) result.uniforms.push_back({UniformKind::Literal,0xffffff3fu,0});
     result.code.insert(result.code.end(),{Nop,Switch,Nop,Nop});
