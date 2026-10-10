@@ -20,9 +20,9 @@ int main() {
     DXGI_ADAPTER_DESC1 desc = {};
     for (UINT i = 0;; ++i) {
         adapter.Reset();
-        HRESULT result = factory->EnumAdapters1(i, &adapter);
-        if (result == DXGI_ERROR_NOT_FOUND) { std::puts("FAIL: Pi5 V3D hardware adapter not found"); return 1; }
-        HR(result); HR(adapter->GetDesc1(&desc));
+        HRESULT enumerateResult = factory->EnumAdapters1(i, &adapter);
+        if (enumerateResult == DXGI_ERROR_NOT_FOUND) { std::puts("FAIL: Pi5 V3D hardware adapter not found"); return 1; }
+        HR(enumerateResult); HR(adapter->GetDesc1(&desc));
         if (!(desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) &&
             (std::wcsstr(desc.Description, L"Pi5") || std::wcsstr(desc.Description, L"Pi 5")) &&
             std::wcsstr(desc.Description, L"V3D")) break;
