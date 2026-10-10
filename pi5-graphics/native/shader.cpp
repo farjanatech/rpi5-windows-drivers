@@ -925,7 +925,8 @@ Shader Compiler::Emit() {
     if(!targetRead&&!finalSectionVertex)result.code.insert(result.code.end(),{Switch,Switch,Nop});
     for (unsigned c = 0; c < colors.size(); ++c) result.code.push_back(Add(182,c ? 7 : 8,colors[c],colors[c],true));
     if (stage == ShaderStage::Pixel) result.uniforms.push_back({UniformKind::Literal,0xffffff3fu,0});
-    result.code.insert(result.code.end(),{Nop,Switch,Nop,Nop});
+    if(finalSectionVertex)result.code.insert(result.code.end(),{Switch,Nop,Nop});
+    else result.code.insert(result.code.end(),{Nop,Switch,Nop,Nop});
     if(stage==ShaderStage::Pixel){
         // Pack only instructions explicitly emitted as plain arithmetic.
         // Varying interpolation, texture/scoreboard sequences and SFU delays
