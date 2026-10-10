@@ -54,10 +54,10 @@ try {
     if ($ExperimentalWddm20) {
         $infPath = Join-Path $staging 'pi5graphics.inf'
         $inf = [IO.File]::ReadAllText($infPath)
-        if ($inf -notmatch '(?m)^DriverVer=10/10/2026,1\.0\.0\.10\s*$') {
-            throw 'Experimental WDDM 2.0 build requires the v10 base INF.'
+        if ($inf -notmatch '(?m)^DriverVer=10/10/2026,1\.0\.0\.12\s*$') {
+            throw 'Experimental WDDM 2.0 build requires the v12 base INF.'
         }
-        $inf = $inf -replace 'DriverVer=10/10/2026,1\.0\.0\.10', 'DriverVer=10/10/2026,1.0.0.11'
+        $inf = $inf -replace 'DriverVer=10/10/2026,1\.0\.0\.12', 'DriverVer=10/10/2026,1.0.0.13'
         [IO.File]::WriteAllText($infPath, $inf, [Text.Encoding]::Unicode)
     }
     # Import libraries and export files are build intermediates, not driver files.

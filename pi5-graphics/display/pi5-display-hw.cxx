@@ -42,6 +42,10 @@ NTSTATUS PI5_DISPLAY_HW::FindPostPort(const DXGK_DEVICE_INFO *device,const DXGK_
                     BddTrace(118+candidate*4,STATUS_SUCCESS,read(base),read(base+12));
                     BddTrace(119+candidate*4,STATUS_SUCCESS,read(base+20),read(base+24));
                     BddTrace(120+candidate*4,STATUS_SUCCESS,read(base+28),display->Pitch);
+                    // Include the position/alpha words checked by C1 below.
+                    // A rejected POST list must be diagnosable before any
+                    // display-register writes or ownership changes.
+                    BddTrace(126+candidate,STATUS_SUCCESS,read(base+4),read(base+8));
                 }
                 // D0 remains Damian's original strict path.
                 if(d0){

@@ -61,20 +61,20 @@ jobs:
         shell: pwsh
         run: |
           New-Item Build -ItemType Directory -Force | Out-Null
-          $cert=New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Farjanatech RPi5 Experimental WDDM20 v11' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(1)
+          $cert=New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Farjanatech RPi5 Experimental WDDM20 v13' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(1)
           "CERT_THUMB=$($cert.Thumbprint)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           Export-Certificate -Cert $cert -FilePath Build\Wddm20-Test.cer | Out-Null
 
-      - name: Build stable control and experimental ARM64 driver
+      - name: Build WDDM 1.2 diagnostic control and experimental ARM64 driver
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          .\build.ps1 -Driver pi5-graphics -Output (Join-Path $PWD 'Build\control') -Configuration Release -SdkVersion 10.0.26100.0 -WdkVersion 10.0.26100.0
+          .\build.ps1 -Driver pi5-graphics -Output (Join-Path $PWD 'Build\control') -Configuration Release -SdkVersion 10.0.26100.0 -WdkVersion 10.0.26100.0 -CertificateThumbprint $env:CERT_THUMB
           .\build.ps1 -Driver pi5-graphics -Output (Join-Path $PWD 'Build\candidate') -Configuration Release -SdkVersion 10.0.26100.0 -WdkVersion 10.0.26100.0 -ExperimentalWddm20 -CertificateThumbprint $env:CERT_THUMB
           $control=Get-Content Build\control\pi5-graphics\pi5graphics.inf -Raw
           $candidate=Get-Content Build\candidate\pi5-graphics\pi5graphics.inf -Raw
-          if($control -notmatch 'DriverVer=10/10/2026,1\.0\.0\.10'){throw 'Default identity changed'}
-          if($candidate -notmatch 'DriverVer=10/10/2026,1\.0\.0\.11'){throw 'Candidate identity missing'}
+          if($control -notmatch 'DriverVer=10/10/2026,1\.0\.0\.12'){throw 'Diagnostic control identity missing'}
+          if($candidate -notmatch 'DriverVer=10/10/2026,1\.0\.0\.13'){throw 'Candidate identity missing'}
 
       - name: Build ARM64 hardware smoke test
         shell: pwsh
@@ -89,18 +89,19 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          $root='Build\RPi5-WDDM20-Experimental-v11'
+          $root='Build\RPi5-WDDM20-Experimental-v13'
           New-Item $root -ItemType Directory -Force | Out-Null
           Copy-Item Build\candidate\pi5-graphics "$root\Graphics" -Recurse
+          Copy-Item Build\control\pi5-graphics "$root\ControlGraphics" -Recurse
           Copy-Item Build\Wddm20-Test.cer,Build\hardware-3d-smoke.exe $root
           Copy-Item pi5-graphics\WDDM20-EXPERIMENTAL.md $root
-          @("Commit: $env:GITHUB_SHA", "Branch: $env:GITHUB_REF_NAME", 'Experimental WDDM 2.0 physical-address driver, ARM64 Release, version 1.0.0.11.', 'CI passing is not proof of hardware or Task Manager support.') | Set-Content "$root\PROVENANCE.txt"
+          @("Commit: $env:GITHUB_SHA", "Branch: $env:GITHUB_REF_NAME", 'Graphics: experimental WDDM 2.0, version 1.0.0.13.', 'ControlGraphics: WDDM 1.2 diagnostic control, version 1.0.0.12; logs C1 POST position/alpha words without relaxing validation.', 'CI passing is not proof of hardware or Task Manager support.') | Set-Content "$root\PROVENANCE.txt"
           Get-ChildItem $root -Recurse -File | Sort-Object FullName | ForEach-Object {
             '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),($_.FullName.Substring((Resolve-Path $root).Path.Length+1).Replace('\','/'))
           } | Set-Content "$root\SHA256SUMS.txt" -Encoding ascii
 
       - uses: actions/upload-artifact@v4
         with:
-          name: RPi5-WDDM20-Experimental-v11
-          path: Build/RPi5-WDDM20-Experimental-v11
+          name: RPi5-WDDM20-Experimental-v13
+          path: Build/RPi5-WDDM20-Experimental-v13
           if-no-files-found: error
