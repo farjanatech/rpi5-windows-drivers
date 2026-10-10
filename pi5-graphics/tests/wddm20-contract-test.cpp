@@ -14,6 +14,17 @@
 #define CHECK(x) do { if (!(x)) { std::printf("FAIL line %d: %s\n", __LINE__, #x); std::exit(1); } } while (0)
 
 int main() {
+    DXGK_DRIVERCAPS driverCaps = {};
+    pi5::SetPhysicalSchedulerCaps(driverCaps);
+    // WDDM 2 uses the Windows 8+ preemption policy. Keep granularity honest:
+    // this serialized engine can stop between DMA buffers, not mid-shader.
+    CHECK(driverCaps.WDDMVersion == DXGKDDI_WDDMv2);
+    CHECK(driverCaps.SchedulingCaps.MultiEngineAware && driverCaps.SchedulingCaps.PreemptionAware);
+    CHECK(driverCaps.PreemptionCaps.GraphicsPreemptionGranularity == D3DKMDT_GRAPHICS_PREEMPTION_DMA_BUFFER_BOUNDARY);
+    CHECK(driverCaps.PreemptionCaps.ComputePreemptionGranularity == D3DKMDT_COMPUTE_PREEMPTION_DMA_BUFFER_BOUNDARY);
+    CHECK(!driverCaps.SchedulingCaps.NoDmaPatching && !driverCaps.SchedulingCaps.CancelCommandAware);
+    CHECK(!driverCaps.MemoryManagementCaps.Value && !driverCaps.SupportPerEngineTDR);
+
     DXGK_QUERYPHYSICALADAPTERCAPSIN adapterIn = {};
     alignas(DXGK_PHYSICALADAPTERCAPS) unsigned char adapterStorage[sizeof(DXGK_PHYSICALADAPTERCAPS) + 16];
     DXGKARG_QUERYADAPTERINFO adapterQuery = {};

@@ -4,6 +4,17 @@
 // WDK types must be included by the caller. These helpers have no kernel API
 // dependencies so their ABI/bounds contracts can also be tested in user mode.
 namespace pi5 {
+inline void SetPhysicalSchedulerCaps(DXGK_DRIVERCAPS& caps) {
+    caps.WDDMVersion = DXGKDDI_WDDMv2;
+    caps.SchedulingCaps.MultiEngineAware = 1;
+    // Preempt queues a request which Worker acknowledges after the current
+    // DMA buffer and pending flips finish. Select the Windows 8+ policy so
+    // VidSch can request that preemption before escalating to a global TDR.
+    caps.SchedulingCaps.PreemptionAware = 1;
+    caps.PreemptionCaps.GraphicsPreemptionGranularity = D3DKMDT_GRAPHICS_PREEMPTION_DMA_BUFFER_BOUNDARY;
+    caps.PreemptionCaps.ComputePreemptionGranularity = D3DKMDT_COMPUTE_PREEMPTION_DMA_BUFFER_BOUNDARY;
+}
+
 inline NTSTATUS QueryPhysicalAdapter(const DXGKARG_QUERYADAPTERINFO& q, HANDLE runtime) {
     if (!runtime || !q.pInputData || q.InputDataSize < sizeof(DXGK_QUERYPHYSICALADAPTERCAPSIN) ||
         static_cast<const DXGK_QUERYPHYSICALADAPTERCAPSIN*>(q.pInputData)->PhysicalAdapterIndex)

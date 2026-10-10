@@ -120,7 +120,11 @@ NTSTATUS Pi5Trace(ULONG id,NTSTATUS status,ULONG a,ULONG b){
     // Preserve the recent ring and publish failures immediately. Rewriting the
     // whole volatile registry value for every draw/fence stalls the producer.
     static volatile LONG64 nextFlush=0;
-    if(NT_SUCCESS(status)){
+    if(NT_SUCCESS(status)
+#ifdef PI5_EXPERIMENTAL_WDDM20
+        &&id!=166&&id!=167 // retain each startup query result before OS teardown
+#endif
+    ){
         LONG64 now=static_cast<LONG64>(KeQueryInterruptTime()),deadline=InterlockedCompareExchange64(&nextFlush,0,0);
         if(now<deadline||InterlockedCompareExchange64(&nextFlush,now+1000000,deadline)!=deadline)return status;
     }
@@ -480,7 +484,7 @@ static NTSTATUS APIENTRY Power(PVOID context,ULONG,DEVICE_POWER_STATE state,POWE
 }
 template<class F,ULONG Id> struct Unsupported;
 template<class... A,ULONG Id>struct Unsupported<NTSTATUS(APIENTRY*)(A...),Id>{static NTSTATUS APIENTRY Call(A...){return Pi5Trace(Id,STATUS_NOT_SUPPORTED);}};
-static NTSTATUS APIENTRY Query(HANDLE h,const DXGKARG_QUERYADAPTERINFO *q){
+static NTSTATUS QueryInfo(HANDLE h,const DXGKARG_QUERYADAPTERINFO *q){
     if(!h||!q||!q->pOutputData)return STATUS_INVALID_PARAMETER;
     auto a=static_cast<Adapter*>(h);Pi5Trace(20,STATUS_SUCCESS,q->Type,q->OutputDataSize);
 #ifdef PI5_EXPERIMENTAL_WDDM20
@@ -504,7 +508,7 @@ static NTSTATUS APIENTRY Query(HANDLE h,const DXGKARG_QUERYADAPTERINFO *q){
         *static_cast<Pi5AdapterInfo*>(q->pOutputData)=info;return STATUS_SUCCESS;}
     if(q->Type==DXGKQAITYPE_DRIVERCAPS){if(q->OutputDataSize<sizeof(DXGK_DRIVERCAPS))return STATUS_BUFFER_TOO_SMALL;auto c=static_cast<DXGK_DRIVERCAPS*>(q->pOutputData);RtlZeroMemory(c,sizeof(*c));c->HighestAcceptableAddress.QuadPart=MAXLONGLONG;c->WDDMVersion=DXGKDDI_WDDMv1_2;c->SupportNonVGA=TRUE;c->SchedulingCaps.MultiEngineAware=1;c->GpuEngineTopology.NbAsymetricProcessingNodes=1;c->PreemptionCaps.GraphicsPreemptionGranularity=D3DKMDT_GRAPHICS_PREEMPTION_DMA_BUFFER_BOUNDARY;c->PreemptionCaps.ComputePreemptionGranularity=D3DKMDT_COMPUTE_PREEMPTION_DMA_BUFFER_BOUNDARY;
 #ifdef PI5_EXPERIMENTAL_WDDM20
-        c->WDDMVersion=DXGKDDI_WDDMv2;
+        pi5::SetPhysicalSchedulerCaps(*c);
         // MemoryManagementCaps.GpuMmuSupported/IoMmuSupported/VirtualAddressingSupported
         // remain zero: this engine uses allocation lists, Patch and SubmitCommand.
 #endif
@@ -517,6 +521,16 @@ static NTSTATUS APIENTRY Query(HANDLE h,const DXGKARG_QUERYADAPTERINFO *q){
     if(q->Type==DXGKQAITYPE_QUERYSEGMENT3){if(q->OutputDataSize<sizeof(DXGK_QUERYSEGMENTOUT3))return STATUS_BUFFER_TOO_SMALL;auto o=static_cast<DXGK_QUERYSEGMENTOUT3*>(q->pOutputData);o->NbSegment=1;o->PagingBufferSegmentId=0;o->PagingBufferSize=65536;o->PagingBufferPrivateDataSize=sizeof(Dma);
         if(o->pSegmentDescriptor){auto s=o->pSegmentDescriptor;RtlZeroMemory(s,sizeof(*s));s->CpuTranslatedAddress=a->physical;s->Size=a->memoryBytes;s->Flags.CpuVisible=1;s->Flags.PopulatedFromSystemMemory=1;}return STATUS_SUCCESS;}
     return STATUS_NOT_SUPPORTED;
+}
+static NTSTATUS APIENTRY Query(HANDLE h,const DXGKARG_QUERYADAPTERINFO *q){
+    NTSTATUS status=QueryInfo(h,q);
+#ifdef PI5_EXPERIMENTAL_WDDM20
+    // Entry-only traces hid BUFFER_TOO_SMALL/NOT_SUPPORTED responses. Keep
+    // startup results durable without adding registry writes to UMD queries.
+    if(q&&q->Type!=DXGKQAITYPE_UMDRIVERPRIVATE)
+        return Pi5Trace(166,status,q->Type,q->OutputDataSize);
+#endif
+    return status;
 }
 static NTSTATUS APIENTRY CreateDevice(HANDLE h,DXGKARG_CREATEDEVICE *a){auto d=static_cast<Device*>(Allocate(sizeof(Device)));if(!d)return STATUS_INSUFFICIENT_RESOURCES;d->adapter=static_cast<Adapter*>(h);d->runtime=a->hDevice;a->hDevice=d;return Pi5Trace(30,STATUS_SUCCESS);}
 static NTSTATUS APIENTRY DestroyDevice(HANDLE h){Free(h);return Pi5Trace(31,STATUS_SUCCESS);}
@@ -678,7 +692,7 @@ static NTSTATUS APIENTRY SchedulerEscape(HANDLE h,const DXGKARG_ESCAPE*e){
 struct Process {Adapter* adapter;HANDLE runtime;};
 static NTSTATUS APIENTRY NodeMetadata(HANDLE h,UINT ordinal,DXGKARG_GETNODEMETADATA* out){
     if(!h)return STATUS_INVALID_PARAMETER;
-    return pi5::GetPhysicalNodeMetadata(ordinal,out);
+    return Pi5Trace(167,pi5::GetPhysicalNodeMetadata(ordinal,out),ordinal);
 }
 static NTSTATUS APIENTRY CreateProcess(HANDLE h,DXGKARG_CREATEPROCESS* args){
     if(!h||!args)return STATUS_INVALID_PARAMETER;

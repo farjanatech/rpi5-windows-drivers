@@ -5,10 +5,33 @@ requires WDDM 2.0 or newer for its VidSch/VidMm GPU performance reporting.
 It is a hardware-test candidate, not a validated production driver.
 
 Build with `build.ps1 -Driver pi5-graphics -ExperimentalWddm20`. Only this explicit
-option enables the new DDIs and changes the staged INF to **1.0.0.14**. Normal
+option enables the new DDIs and changes the staged INF to **1.0.0.15**. Normal
 builds use the **WDDM 1.2 / 1.0.0.12** diagnostic control. Both packages add
 read-only POST-list traces 126/127 for the position and alpha words. Display
 validation and rendering behavior remain unchanged from v10.
+
+**C1 activation is blocked.** Read-only inspection of the installed ARM64
+`dxgkrnl.sys` 10.0.22621.4249, using its matching Microsoft public symbols,
+found an explicit `ADAPTER_RENDER::CreateRenderCore` rejection of WDDM 2.x
+graphics drivers without `FlipOnVSyncMmIo`. The C1 branch deliberately keeps
+that capability off because direct segment scanout previously corrupted the
+display. This is a concrete incompatibility with the current candidate; the
+last query (47, an optional 64-bit-only-driver query) is not itself fatal.
+Do not advertise MMIO flips while `SourceAddress` still uses the passive-level
+copy path: the OS can then call it at interrupt level.
+
+Run `Assert-Wddm20Hardware.ps1` before staging or activating the experimental
+package. It rejects C1 and unknown revisions. D0 passing the gate is not
+hardware qualification. The next C1 requirement is a correct, validated
+interrupt-safe scanout path, not another capability-only installation.
+
+V15 also selects the Windows 8+ preemption policy for the existing DMA-boundary
+preemption implementation. Startup query results (trace 166) and node metadata
+results (167) are flushed immediately, without per-frame registry writes.
+`Capture-StartupTrace.ps1` selects diagnostic/driver/Azure-triage keywords and
+uses a bounded sequential trace to retain the beginning of startup. Its
+installer must still arm independent recovery. These diagnostics and the
+preemption correction do not resolve the C1 scanout incompatibility.
 
 The v10 device reported Code 43 after a reboot, with FindPostPort returning
 STATUS_DEVICE_CONFIGURATION_ERROR before display hardware startup. The old
