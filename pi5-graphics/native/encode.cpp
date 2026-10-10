@@ -168,9 +168,11 @@ bool EncodeDrawBatch(const Draw *draws,uint32_t count,uint32_t base,void *buffer
         }
         w.Bits(24,8,item.varyingScalars);
         w.Bits(32,4,((item.vertexScalars>6?item.vertexScalars:6)+7)/8);w.Bits(48,4,((item.vertexScalars>4+item.varyingScalars?item.vertexScalars:4+item.varyingScalars)+7)/8);
-        w.Bits(64,32,item.pixelCode | ((item.fourThreadMask>>2)&1));w.Bits(96,32,item.pixelUniforms);
-        w.Bits(128,32,item.vertexCode | ((item.fourThreadMask>>1)&1));w.Bits(160,32,item.vertexUniforms);
-        w.Bits(192,32,item.coordinateCode | (item.fourThreadMask&1));w.Bits(224,32,item.coordinateUniforms);
+        // Low code-address bits are shader-state flags on V3D 4.x+:
+        // bit 0 = 4-way threadable, bit 1 = start in final thread section.
+        w.Bits(64,32,item.pixelCode | ((item.fourThreadMask>>2)&1) | (((item.finalThreadMask>>2)&1)<<1));w.Bits(96,32,item.pixelUniforms);
+        w.Bits(128,32,item.vertexCode | ((item.fourThreadMask>>1)&1) | (((item.finalThreadMask>>1)&1)<<1));w.Bits(160,32,item.vertexUniforms);
+        w.Bits(192,32,item.coordinateCode | (item.fourThreadMask&1) | ((item.finalThreadMask&1)<<1));w.Bits(224,32,item.coordinateUniforms);
         uint32_t attributes=(item.vertexScalars+3)/4;
         for(uint32_t i=0;i<attributes;++i){uint32_t values=item.vertexScalars-i*4;if(values>4)values=4;
             w.Begin(0,16);w.Bits(0,32,item.vertexAddress+i*16);w.Bits(32,2,values&3);w.Bits(34,3,6);w.Bits(39,1,1);
