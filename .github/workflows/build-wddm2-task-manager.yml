@@ -1,0 +1,106 @@
+name: Build experimental WDDM 2.0 graphics
+
+on:
+  push:
+    branches: [wddm2-task-manager]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check silicon invariants and PowerShell syntax
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          python pi5-graphics/tests/check-universal-invariants.py
+          if($LASTEXITCODE){throw 'C1/D0 invariants failed'}
+          foreach($path in @('build.ps1','pi5-graphics/build.ps1')) {
+            $tokens=$null; $errors=$null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PWD $path),[ref]$tokens,[ref]$errors)
+            if($errors.Count){throw ($errors | Out-String)}
+          }
+
+      - name: Install WDK 26100 if needed
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          if(!(Test-Path 'C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km\ntddk.h')) {
+            winget install --id Microsoft.WindowsWDK.10.0.26100 -e --silent --accept-package-agreements --accept-source-agreements
+            if($LASTEXITCODE){throw "WDK installation failed: $LASTEXITCODE"}
+          }
+
+      - name: Run WDDM contracts and rendering regressions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item Build -ItemType Directory -Force | Out-Null
+          $vswhere='C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs=& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if(!$vs){throw 'Visual Studio x64 tools missing'}
+          $init='call "'+$vs+'\VC\Auxiliary\Build\vcvars64.bat"'
+          $flags='/nologo /EHsc /std:c++17 /W4 /WX /external:anglebrackets /external:W0'
+          $km='C:\Program Files (x86)\Windows Kits\10\Include\10.0.26100.0\km'
+          $commands=@(
+            ('cl '+$flags+' /D_AMD64_ /I"'+$km+'" pi5-graphics\tests\wddm20-contract-test.cpp /Fe:Build\wddm20-contract-test.exe && Build\wddm20-contract-test.exe'),
+            ('cl '+$flags+' pi5-graphics\tests\encoder-revision-test.cpp /Fe:Build\encoder-revision-test.exe && Build\encoder-revision-test.exe'),
+            ('cl '+$flags+' pi5-graphics\tests\shader-varying-sqrt-test.cpp pi5-graphics\native\shader.cpp pi5-graphics\native\validate.cpp /Fe:Build\shader-varying-sqrt-test.exe /link d3dcompiler.lib && Build\shader-varying-sqrt-test.exe')
+          )
+          foreach($command in $commands) {
+            & cmd.exe /d /s /c ($init+' && '+$command)
+            if($LASTEXITCODE){throw 'Regression test failed'}
+          }
+
+      - name: Create candidate signing certificate
+        shell: pwsh
+        run: |
+          New-Item Build -ItemType Directory -Force | Out-Null
+          $cert=New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Farjanatech RPi5 Experimental WDDM20 v11' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(1)
+          "CERT_THUMB=$($cert.Thumbprint)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+          Export-Certificate -Cert $cert -FilePath Build\Wddm20-Test.cer | Out-Null
+
+      - name: Build stable control and experimental ARM64 driver
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          .\build.ps1 -Driver pi5-graphics -Output (Join-Path $PWD 'Build\control') -Configuration Release -SdkVersion 10.0.26100.0 -WdkVersion 10.0.26100.0
+          .\build.ps1 -Driver pi5-graphics -Output (Join-Path $PWD 'Build\candidate') -Configuration Release -SdkVersion 10.0.26100.0 -WdkVersion 10.0.26100.0 -ExperimentalWddm20 -CertificateThumbprint $env:CERT_THUMB
+          $control=Get-Content Build\control\pi5-graphics\pi5graphics.inf -Raw
+          $candidate=Get-Content Build\candidate\pi5-graphics\pi5graphics.inf -Raw
+          if($control -notmatch 'DriverVer=10/10/2026,1\.0\.0\.10'){throw 'Default identity changed'}
+          if($candidate -notmatch 'DriverVer=10/10/2026,1\.0\.0\.11'){throw 'Candidate identity missing'}
+
+      - name: Build ARM64 hardware smoke test
+        shell: pwsh
+        run: |
+          $vswhere='C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs=& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.ARM64 -property installationPath
+          $command='call "'+$vs+'\VC\Auxiliary\Build\vcvarsall.bat" amd64_arm64 10.0.26100.0 && cl /nologo /std:c++17 /EHsc /W4 /WX /MT pi5-graphics\tests\hardware-3d-smoke.cpp /Fe:Build\hardware-3d-smoke.exe /link d3d11.lib dxgi.lib d3dcompiler.lib'
+          & cmd.exe /d /s /c $command
+          if($LASTEXITCODE){throw 'ARM64 hardware probe build failed'}
+
+      - name: Package candidate with provenance
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $root='Build\RPi5-WDDM20-Experimental-v11'
+          New-Item $root -ItemType Directory -Force | Out-Null
+          Copy-Item Build\candidate\pi5-graphics "$root\Graphics" -Recurse
+          Copy-Item Build\Wddm20-Test.cer,Build\hardware-3d-smoke.exe $root
+          Copy-Item pi5-graphics\WDDM20-EXPERIMENTAL.md $root
+          @("Commit: $env:GITHUB_SHA", "Branch: $env:GITHUB_REF_NAME", 'Experimental WDDM 2.0 physical-address driver, ARM64 Release, version 1.0.0.11.', 'CI passing is not proof of hardware or Task Manager support.') | Set-Content "$root\PROVENANCE.txt"
+          Get-ChildItem $root -Recurse -File | Sort-Object FullName | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),($_.FullName.Substring((Resolve-Path $root).Path.Length+1).Replace('\','/'))
+          } | Set-Content "$root\SHA256SUMS.txt" -Encoding ascii
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RPi5-WDDM20-Experimental-v11
+          path: Build/RPi5-WDDM20-Experimental-v11
+          if-no-files-found: error

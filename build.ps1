@@ -21,7 +21,8 @@ param(
     [string]$CertificateThumbprint = '',
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
-    [switch]$Analyze
+    [switch]$Analyze,
+    [switch]$ExperimentalWddm20
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -131,6 +132,7 @@ foreach ($name in $names) {
             Work = $work; Init = $init; KernelInclude = $kernelInclude; KernelLib = $kernelLib
             KmdfInclude = $kmdfInclude; KmdfLib = $kmdfLib
             Configuration = $Configuration; Analyze = $Analyze
+            ExperimentalWddm20 = $ExperimentalWddm20
         }
         & (Join-Path $PSScriptRoot 'pi5-graphics\build.ps1') @graphicsArguments
         $staging = Join-Path $work 'package'

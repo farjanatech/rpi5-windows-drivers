@@ -1,6 +1,9 @@
 #include "precomp.h"
 #include "gpu.h"
 #include <acpiioct.h>
+#ifdef PI5_EXPERIMENTAL_WDDM20
+#include "wddm20.h"
+#endif
 
 static NTSTATUS Pi5EvalAcpiInteger(PDEVICE_OBJECT device,const CHAR name[4],ULONG *value)
 {
@@ -478,13 +481,32 @@ static NTSTATUS APIENTRY Power(PVOID context,ULONG,DEVICE_POWER_STATE state,POWE
 template<class F,ULONG Id> struct Unsupported;
 template<class... A,ULONG Id>struct Unsupported<NTSTATUS(APIENTRY*)(A...),Id>{static NTSTATUS APIENTRY Call(A...){return Pi5Trace(Id,STATUS_NOT_SUPPORTED);}};
 static NTSTATUS APIENTRY Query(HANDLE h,const DXGKARG_QUERYADAPTERINFO *q){
+    if(!h||!q||!q->pOutputData)return STATUS_INVALID_PARAMETER;
     auto a=static_cast<Adapter*>(h);Pi5Trace(20,STATUS_SUCCESS,q->Type,q->OutputDataSize);
+#ifdef PI5_EXPERIMENTAL_WDDM20
+    if(q->Type==DXGKQAITYPE_QUERYSEGMENT4)return pi5::QueryPhysicalSegment(*q,a->physical,a->memoryBytes,sizeof(Dma));
+    if(q->Type==DXGKQAITYPE_DISPLAY_DRIVERCAPS_EXTENSION){
+        if(q->OutputDataSize<sizeof(DXGK_DISPLAY_DRIVERCAPS_EXTENSION))return STATUS_BUFFER_TOO_SMALL;
+        // Preserve the existing physical display-mode path; do not enable the
+        // imported BDD's virtual-mode flag without implementing that contract.
+        RtlZeroMemory(q->pOutputData,sizeof(DXGK_DISPLAY_DRIVERCAPS_EXTENSION));return STATUS_SUCCESS;
+    }
+    if(q->Type==DXGKQAITYPE_NUMPOWERCOMPONENTS){
+        if(q->OutputDataSize<sizeof(UINT))return STATUS_BUFFER_TOO_SMALL;
+        *static_cast<UINT*>(q->pOutputData)=0;return STATUS_SUCCESS;
+    }
+#endif
     if(q->Type==DXGKQAITYPE_UMDRIVERPRIVATE){if(q->OutputDataSize!=sizeof(Pi5AdapterInfo))return STATUS_INVALID_PARAMETER;Pi5AdapterInfo info={PI5_UMD_MAGIC,PI5_UMD_ABI,71,0};
 #ifdef PI5_FULL_DISPLAY
         info.Caps=PI5_ADAPTER_NATIVE_DISPLAY;
 #endif
         *static_cast<Pi5AdapterInfo*>(q->pOutputData)=info;return STATUS_SUCCESS;}
     if(q->Type==DXGKQAITYPE_DRIVERCAPS){if(q->OutputDataSize<sizeof(DXGK_DRIVERCAPS))return STATUS_BUFFER_TOO_SMALL;auto c=static_cast<DXGK_DRIVERCAPS*>(q->pOutputData);RtlZeroMemory(c,sizeof(*c));c->HighestAcceptableAddress.QuadPart=MAXLONGLONG;c->WDDMVersion=DXGKDDI_WDDMv1_2;c->SupportNonVGA=TRUE;c->SchedulingCaps.MultiEngineAware=1;c->GpuEngineTopology.NbAsymetricProcessingNodes=1;c->PreemptionCaps.GraphicsPreemptionGranularity=D3DKMDT_GRAPHICS_PREEMPTION_DMA_BUFFER_BOUNDARY;c->PreemptionCaps.ComputePreemptionGranularity=D3DKMDT_COMPUTE_PREEMPTION_DMA_BUFFER_BOUNDARY;
+#ifdef PI5_EXPERIMENTAL_WDDM20
+        c->WDDMVersion=DXGKDDI_WDDMv2;
+        // MemoryManagementCaps.GpuMmuSupported/IoMmuSupported/VirtualAddressingSupported
+        // remain zero: this engine uses allocation lists, Patch and SubmitCommand.
+#endif
 #ifdef PI5_FULL_DISPLAY
         c->SchedulingCaps.VSyncPowerSaveAware=1;c->PresentationCaps.DriverSupportsCddDwmInterop=1;c->PresentationCaps.NoScreenToScreenBlt=1;c->PresentationCaps.NoOverlapScreenBlt=1;c->PresentationCaps.AlignmentShift=6;c->PresentationCaps.MaxTextureWidthShift=2;c->PresentationCaps.MaxTextureHeightShift=2;
         c->FlipCaps.FlipOnVSyncMmIo=a->mmioFlips;c->FlipCaps.FlipOnVSyncWithNoWait=a->asyncFlips||a->mmioFlips;
@@ -505,6 +527,9 @@ static NTSTATUS APIENTRY CreateAllocation(HANDLE h,DXGKARG_CREATEALLOCATION *a){
     RtlCopyMemory(&info,out->pPrivateDriverData,sizeof(info));if(!pi5::ValidateAllocation(info))return Pi5Trace(40,STATUS_INVALID_PARAMETER,info.Width,info.Height);
     auto allocation=static_cast<Allocation*>(Allocate(sizeof(Allocation)));if(!allocation)return STATUS_INSUFFICIENT_RESOURCES;allocation->info=info;allocation->adapter=static_cast<Adapter*>(h);allocation->identity=static_cast<ULONGLONG>(InterlockedIncrement64(&allocation->adapter->nextAllocation));
     out->hAllocation=allocation;out->Alignment=PAGE_SIZE;out->Size=info.Bytes;out->PitchAlignedSize=0;out->HintedBank.Value=0;out->PreferredSegment.Value=0;out->PreferredSegment.SegmentId0=1;out->SupportedReadSegmentSet=out->SupportedWriteSegmentSet=1;out->EvictionSegmentSet=0;out->MaximumRenamingListLength=0;out->Flags.Value=0;out->Flags.CpuVisible=!Pi5CpuInvisible(info);out->Flags.Cached=0;out->pAllocationUsageHint=nullptr;out->AllocationPriority=D3DDDI_ALLOCATIONPRIORITY_NORMAL;
+#ifdef PI5_EXPERIMENTAL_WDDM20
+    pi5::SetPhysicalAllocationFlags(*out,!Pi5CpuInvisible(info));
+#endif
     if(a->Flags.Resource&&!a->hResource){a->hResource=Allocate(sizeof(ULONG));if(!a->hResource){Free(allocation);return STATUS_INSUFFICIENT_RESOURCES;}}
     return Pi5Trace(40,STATUS_SUCCESS,info.Bytes,info.BindFlags);
 }
@@ -648,8 +673,33 @@ static NTSTATUS APIENTRY SchedulerEscape(HANDLE h,const DXGKARG_ESCAPE*e){
 #ifdef PI5_FULL_DISPLAY
 #include "display.inc"
 #endif
+#ifdef PI5_EXPERIMENTAL_WDDM20
+struct Process {Adapter* adapter;HANDLE runtime;};
+static NTSTATUS APIENTRY NodeMetadata(HANDLE h,UINT ordinal,DXGKARG_GETNODEMETADATA* out){
+    if(!h)return STATUS_INVALID_PARAMETER;
+    return pi5::GetPhysicalNodeMetadata(ordinal,out);
+}
+static NTSTATUS APIENTRY CreateProcess(HANDLE h,DXGKARG_CREATEPROCESS* args){
+    if(!h||!args)return STATUS_INVALID_PARAMETER;
+    args->hKmdProcess=nullptr;
+    auto process=static_cast<Process*>(Allocate(sizeof(Process)));
+    if(!process)return STATUS_INSUFFICIENT_RESOURCES;
+    process->adapter=static_cast<Adapter*>(h);process->runtime=args->hDxgkProcess;
+    args->hKmdProcess=process;return STATUS_SUCCESS;
+}
+static NTSTATUS APIENTRY DestroyProcess(HANDLE h,HANDLE handle){
+    auto process=static_cast<Process*>(handle);
+    if(!h||!process||process->adapter!=h)return STATUS_INVALID_PARAMETER;
+    Free(process);return STATUS_SUCCESS;
+}
+#endif
 extern "C" NTSTATUS DriverEntry(DRIVER_OBJECT *driver,UNICODE_STRING *registry){
     DRIVER_INITIALIZATION_DATA d={};d.Version=DXGKDDI_INTERFACE_VERSION_WIN8;
+#ifdef PI5_EXPERIMENTAL_WDDM20
+    d.Version=DXGKDDI_INTERFACE_VERSION_WDDM2_0;
+    d.DxgkDdiGetNodeMetadata=NodeMetadata;
+    d.DxgkDdiCreateProcess=CreateProcess;d.DxgkDdiDestroyProcess=DestroyProcess;
+#endif
     d.DxgkDdiAddDevice=Add;d.DxgkDdiStartDevice=Start;d.DxgkDdiStopDevice=Stop;d.DxgkDdiRemoveDevice=Remove;d.DxgkDdiUnload=Unload;d.DxgkDdiResetDevice=ResetDevice;d.DxgkDdiInterruptRoutine=Interrupt;d.DxgkDdiDpcRoutine=Dpc;d.DxgkDdiSetPowerState=Power;d.DxgkDdiQueryAdapterInfo=Query;
     d.DxgkDdiCreateDevice=CreateDevice;d.DxgkDdiDestroyDevice=DestroyDevice;d.DxgkDdiCreateContext=CreateContext;d.DxgkDdiDestroyContext=DestroyContext;
     d.DxgkDdiCreateAllocation=CreateAllocation;d.DxgkDdiDestroyAllocation=DestroyAllocation;d.DxgkDdiOpenAllocation=Open;d.DxgkDdiCloseAllocation=Close;d.DxgkDdiDescribeAllocation=Describe;

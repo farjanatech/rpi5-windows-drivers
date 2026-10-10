@@ -9,7 +9,8 @@ param(
     [Parameter(Mandatory)][string]$KmdfInclude,
     [Parameter(Mandatory)][string]$KmdfLib,
     [ValidateSet('Debug','Release')][string]$Configuration = 'Release',
-    [switch]$Analyze
+    [switch]$Analyze,
+    [switch]$ExperimentalWddm20
 )
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
@@ -34,6 +35,7 @@ $runtime = if ($Configuration -eq 'Debug') { '/MTd' } else { '/MT' }
 $analysis = if ($Analyze) { ' /analyze /analyze:external- /analyze:WX-' } else { '' }
 $warnings = '/nologo /W4 /WX /Zi /external:anglebrackets /external:W0'
 $defines = '/D_ARM64_ /DWINNT=1 /DPI5_FULL_DISPLAY=1 /D_ARM64_WINAPI_PARTITION_DESKTOP_SDK_AVAILABLE=1 /DNTDDI_VERSION=0x0A000008 /D_WIN32_WINNT=0x0A00'
+if ($ExperimentalWddm20) { $defines += ' /DPI5_EXPERIMENTAL_WDDM20=1' }
 $includes = '/I"' + $KernelInclude + '" /I"' + $Work + '"'
 $libraries = '/LIBPATH:"' + $KernelLib + '" ntoskrnl.lib hal.lib BufferOverflowFastFailK.lib displib.lib'
 
@@ -49,6 +51,15 @@ try {
     Invoke-Compiler ('cl ' + $warnings + ' ' + $kernelFlags + ' /kernel ' + $defines + ' ' + $includes + ' ' + $wdfIncludes + ' /c /Fopower-filter.obj kmd\power-filter.c' + $analysis)
     Invoke-Compiler ('link /nologo /DRIVER /SUBSYSTEM:NATIVE,10.00 /ENTRY:FxDriverEntry /MACHINE:ARM64 /DEBUG /INCREMENTAL:NO /OUT:package\Pi5GraphicsPower.sys power-filter.obj ' + $libraries + ' ' + $wdfLibraries)
     Copy-Item "$PSScriptRoot\pi5graphics.inf","$PSScriptRoot\display\LICENSE.txt","$PSScriptRoot\display\EDID-LICENSE.txt" $staging
+    if ($ExperimentalWddm20) {
+        $infPath = Join-Path $staging 'pi5graphics.inf'
+        $inf = [IO.File]::ReadAllText($infPath)
+        if ($inf -notmatch '(?m)^DriverVer=10/10/2026,1\.0\.0\.10\s*$') {
+            throw 'Experimental WDDM 2.0 build requires the v10 base INF.'
+        }
+        $inf = $inf -replace 'DriverVer=10/10/2026,1\.0\.0\.10', 'DriverVer=10/10/2026,1.0.0.11'
+        [IO.File]::WriteAllText($infPath, $inf, [Text.Encoding]::Unicode)
+    }
     # Import libraries and export files are build intermediates, not driver files.
     Remove-Item "$staging\*.lib","$staging\*.exp" -ErrorAction SilentlyContinue
 } finally { Pop-Location }
