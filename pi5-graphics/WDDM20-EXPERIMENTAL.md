@@ -5,7 +5,7 @@ requires WDDM 2.0 or newer for its VidSch/VidMm GPU performance reporting.
 It is a hardware-test candidate, not a validated production driver.
 
 Build with `build.ps1 -Driver pi5-graphics -ExperimentalWddm20`. Only this explicit
-option enables the new DDIs and changes the staged INF to **1.0.0.13**. Normal
+option enables the new DDIs and changes the staged INF to **1.0.0.14**. Normal
 builds use the **WDDM 1.2 / 1.0.0.12** diagnostic control. Both packages add
 read-only POST-list traces 126/127 for the position and alpha words. Display
 validation and rendering behavior remain unchanged from v10.
@@ -14,10 +14,17 @@ The v10 device reported Code 43 after a reboot, with FindPostPort returning
 STATUS_DEVICE_CONFIGURATION_ERROR before display hardware startup. The old
 trace omitted two C1 predicates. Capture those words with ControlGraphics v12
 before activating the WDDM 2.0 candidate; do not relax checks from incomplete
-diagnostics or describe v10 as a healthy post-reboot baseline.
+diagnostics or describe v10 as a consistently healthy post-reboot baseline.
+
+Hardware observation on 2026-10-10: v10 started successfully after a subsequent
+reboot and passed the 120-frame hardware shader/readback test. Candidate v13
+completed display startup but Windows stopped it after adapter-capability
+queries; it was removed and v10 passed the same test after restoration. V14
+adds the missing physical-adapter response, including the 20-byte WDDM 2.0
+output size actually requested by Windows. It still requires hardware validation.
 
 The candidate registers the WDDM 2.0 interface, reports one physical-address
-V3D 3D node, enumerates the existing CPU-visible reserved memory through
+V3D 3D node and its physical-adapter capabilities, enumerates the existing CPU-visible reserved memory through
 QUERYSEGMENT4, marks allocations AccessedPhysically and provides process object
 lifetime callbacks. Two-stage segment enumeration never reads undefined fields
 in the count query and respects the OS-supplied descriptor stride. Submission,

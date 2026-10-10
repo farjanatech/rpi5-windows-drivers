@@ -484,6 +484,7 @@ static NTSTATUS APIENTRY Query(HANDLE h,const DXGKARG_QUERYADAPTERINFO *q){
     if(!h||!q||!q->pOutputData)return STATUS_INVALID_PARAMETER;
     auto a=static_cast<Adapter*>(h);Pi5Trace(20,STATUS_SUCCESS,q->Type,q->OutputDataSize);
 #ifdef PI5_EXPERIMENTAL_WDDM20
+    if(q->Type==DXGKQAITYPE_PHYSICALADAPTERCAPS)return Pi5Trace(165,pi5::QueryPhysicalAdapter(*q,a->dxgk.DeviceHandle),q->InputDataSize,q->OutputDataSize);
     if(q->Type==DXGKQAITYPE_QUERYSEGMENT4)return pi5::QueryPhysicalSegment(*q,a->physical,a->memoryBytes,sizeof(Dma));
     if(q->Type==DXGKQAITYPE_DISPLAY_DRIVERCAPS_EXTENSION){
         if(q->OutputDataSize<sizeof(DXGK_DISPLAY_DRIVERCAPS_EXTENSION))return STATUS_BUFFER_TOO_SMALL;

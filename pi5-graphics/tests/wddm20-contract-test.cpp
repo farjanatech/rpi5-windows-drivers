@@ -14,6 +14,39 @@
 #define CHECK(x) do { if (!(x)) { std::printf("FAIL line %d: %s\n", __LINE__, #x); std::exit(1); } } while (0)
 
 int main() {
+    DXGK_QUERYPHYSICALADAPTERCAPSIN adapterIn = {};
+    alignas(DXGK_PHYSICALADAPTERCAPS) unsigned char adapterStorage[sizeof(DXGK_PHYSICALADAPTERCAPS) + 16];
+    DXGKARG_QUERYADAPTERINFO adapterQuery = {};
+    adapterQuery.pInputData = &adapterIn; adapterQuery.InputDataSize = sizeof(adapterIn);
+    adapterQuery.pOutputData = adapterStorage;
+    const UINT adapterMinimum = FIELD_OFFSET(DXGK_PHYSICALADAPTERCAPS, Flags) + sizeof(DXGK_PHYSICALADAPTERFLAGS);
+    CHECK(adapterMinimum == 20); // ARM64/x64 WDDM 2.0 physical-adapter wire size
+    HANDLE runtime = reinterpret_cast<HANDLE>(static_cast<ULONG_PTR>(0x1234));
+    for (UINT outputSize : {adapterMinimum, static_cast<UINT>(sizeof(DXGK_PHYSICALADAPTERCAPS)), static_cast<UINT>(sizeof(adapterStorage))}) {
+        std::memset(adapterStorage, 0xa5, sizeof(adapterStorage)); adapterQuery.OutputDataSize = outputSize;
+        CHECK(pi5::QueryPhysicalAdapter(adapterQuery, runtime) == STATUS_SUCCESS);
+        DXGK_PHYSICALADAPTERCAPS caps = {};
+        std::memcpy(&caps, adapterStorage, adapterMinimum);
+        CHECK(caps.NumExecutionNodes == 1 && caps.PagingNodeIndex == 0);
+        CHECK(caps.DxgkPhysicalAdapterHandle == runtime && caps.Flags.Value == 0);
+        SIZE_T written = outputSize < sizeof(caps) ? outputSize : sizeof(caps);
+        for (SIZE_T i = written; i < sizeof(adapterStorage); ++i) CHECK(adapterStorage[i] == 0xa5);
+    }
+    std::memset(adapterStorage, 0x5a, sizeof(adapterStorage));
+    adapterQuery.OutputDataSize = adapterMinimum - 1;
+    CHECK(pi5::QueryPhysicalAdapter(adapterQuery, runtime) == STATUS_BUFFER_TOO_SMALL);
+    for (auto value : adapterStorage) CHECK(value == 0x5a);
+    adapterQuery.OutputDataSize = adapterMinimum; adapterIn.PhysicalAdapterIndex = 1;
+    CHECK(pi5::QueryPhysicalAdapter(adapterQuery, runtime) == STATUS_INVALID_PARAMETER);
+    adapterIn.PhysicalAdapterIndex = 0; adapterQuery.InputDataSize--;
+    CHECK(pi5::QueryPhysicalAdapter(adapterQuery, runtime) == STATUS_INVALID_PARAMETER);
+    adapterQuery.InputDataSize++; adapterQuery.pInputData = nullptr;
+    CHECK(pi5::QueryPhysicalAdapter(adapterQuery, runtime) == STATUS_INVALID_PARAMETER);
+    adapterQuery.pInputData = &adapterIn; adapterQuery.pOutputData = nullptr;
+    CHECK(pi5::QueryPhysicalAdapter(adapterQuery, runtime) == STATUS_BUFFER_TOO_SMALL);
+    adapterQuery.pOutputData = adapterStorage;
+    CHECK(pi5::QueryPhysicalAdapter(adapterQuery, nullptr) == STATUS_INVALID_PARAMETER);
+
     constexpr SIZE_T bytes = 256 * 1024 * 1024;
     PHYSICAL_ADDRESS physical = {}; physical.QuadPart = 0x100000000ll;
     DXGK_QUERYSEGMENTIN4 in = {};

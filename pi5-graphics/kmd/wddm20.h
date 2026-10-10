@@ -4,6 +4,24 @@
 // WDK types must be included by the caller. These helpers have no kernel API
 // dependencies so their ABI/bounds contracts can also be tested in user mode.
 namespace pi5 {
+inline NTSTATUS QueryPhysicalAdapter(const DXGKARG_QUERYADAPTERINFO& q, HANDLE runtime) {
+    if (!runtime || !q.pInputData || q.InputDataSize < sizeof(DXGK_QUERYPHYSICALADAPTERCAPSIN) ||
+        static_cast<const DXGK_QUERYPHYSICALADAPTERCAPSIN*>(q.pInputData)->PhysicalAdapterIndex)
+        return STATUS_INVALID_PARAMETER;
+    // Windows supplies 20 bytes for WDDM 2.0 on ARM64: the fields through
+    // Flags, without the compiler's four bytes of trailing structure padding.
+    const SIZE_T minimum = FIELD_OFFSET(DXGK_PHYSICALADAPTERCAPS, Flags) + sizeof(DXGK_PHYSICALADAPTERFLAGS);
+    if (!q.pOutputData || q.OutputDataSize < minimum) return STATUS_BUFFER_TOO_SMALL;
+    DXGK_PHYSICALADAPTERCAPS caps = {};
+    caps.NumExecutionNodes = 1;
+    caps.PagingNodeIndex = 0;
+    caps.DxgkPhysicalAdapterHandle = runtime;
+    // This physical engine has neither WDDM GPUVA nor IOMMU translation.
+    const SIZE_T count = q.OutputDataSize < sizeof(caps) ? q.OutputDataSize : sizeof(caps);
+    RtlCopyMemory(q.pOutputData, &caps, count);
+    return STATUS_SUCCESS;
+}
+
 inline NTSTATUS QueryPhysicalSegment(const DXGKARG_QUERYADAPTERINFO& q,
     PHYSICAL_ADDRESS physical, SIZE_T bytes, UINT privateBytes) {
     if (!q.pInputData || q.InputDataSize < sizeof(DXGK_QUERYSEGMENTIN4))
