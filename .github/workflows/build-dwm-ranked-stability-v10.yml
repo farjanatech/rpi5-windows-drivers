@@ -1,0 +1,141 @@
+name: Build DWM Ranked Stability Test Kit v10
+
+on:
+  push:
+    branches:
+      - dwm-ranked-stability-v10
+    paths:
+      - 'pi5-graphics/**'
+      - 'tools/dwm-umd-auto-test-kit/**'
+      - '.github/workflows/build-dwm-ranked-stability-v10.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify v9 graphics invariants and unique v10 rank
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $base='c4d7a9feaeaa99f032547e33462ad056a4508c14'
+          $product=@(git diff --name-only $base HEAD -- pi5-graphics)
+          $allowed=@(
+            'pi5-graphics/pi5graphics.inf',
+            'pi5-graphics/native/umd.cpp',
+            'pi5-graphics/native/umd.h',
+            'pi5-graphics/native/abi.h',
+            'pi5-graphics/native/shader.cpp',
+            'pi5-graphics/native/encode.cpp',
+            'pi5-graphics/native/encode.h',
+            'pi5-graphics/native/validate.cpp',
+            'pi5-graphics/native/validate.h',
+            'pi5-graphics/native/qpu-alu.h',
+            'pi5-graphics/kmd/gpu.cpp',
+            'pi5-graphics/tests/encoder-revision-test.cpp',
+            'pi5-graphics/tests/shader-varying-sqrt-test.cpp'
+          )
+          $unexpected=@($product|Where-Object {$_ -notin $allowed})
+          if($unexpected.Count){throw ('Unexpected graphics product-code changes: '+($unexpected -join ', '))}
+          python pi5-graphics/tests/check-universal-invariants.py
+          if($LASTEXITCODE){throw 'Universal source invariant check failed'}
+          $inf=Get-Content pi5-graphics/pi5graphics.inf -Raw
+          if($inf -notmatch '(?im)^DriverVer=10/10/2026,1\.0\.0\.10\s*$'){throw 'Unique v10 DriverVer is missing'}
+          $shader=Get-Content pi5-graphics/native/shader.cpp -Raw
+          if($shader -notmatch 'finalSectionVertex' -or $shader -notmatch '!internalThreadSwitch'){throw 'v9 final-section epilogue correction is missing'}
+          if($shader -notmatch 'limits\[2\]=\{32u,64u\}'){throw '64-register vertex fallback is missing'}
+          $validate=Get-Content pi5-graphics/native/validate.cpp -Raw
+          if($validate -notmatch 'finalSectionVertex'){throw 'Final-section validator support is missing'}
+          $gpu=Get-Content pi5-graphics/kmd/gpu.cpp -Raw
+          if($gpu -notmatch 'finalThreadMask' -or $gpu -notmatch 'i==1&&!patches.count'){throw 'KMD final-section selection is missing'}
+
+      - name: Parse automatic test PowerShell
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $failed=$false
+          Get-ChildItem tools/dwm-umd-auto-test-kit -Filter *.ps1 | ForEach-Object {
+            $tokens=$null;$errors=$null
+            [void][System.Management.Automation.Language.Parser]::ParseFile($_.FullName,[ref]$tokens,[ref]$errors)
+            if($errors.Count){$failed=$true;$errors|ForEach-Object {Write-Host ("PARSE FAIL $($_.Message)") -ForegroundColor Red}}
+          }
+          if($failed){throw 'Automatic test kit PowerShell parse failed'}
+
+      - name: Install WDK 26100 if needed
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $wdk='C:\Program Files (x86)\Windows Kits\10'
+          if(!(Test-Path "$wdk\Include\10.0.26100.0\km\ntddk.h")){
+            winget install --id Microsoft.WindowsWDK.10.0.26100 -e --silent --accept-package-agreements --accept-source-agreements
+            if($LASTEXITCODE){throw "WDK installation failed: $LASTEXITCODE"}
+          }
+
+      - name: Run V3D encoder and shader regressions
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item Build -ItemType Directory -Force | Out-Null
+          $vswhere='C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs=& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if(!$vs){throw 'Visual Studio x64 C++ tools not found'}
+          $vcvars=Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $cmd='call "'+$vcvars+'" && cl /nologo /EHsc /std:c++20 /W4 /WX pi5-graphics\tests\encoder-revision-test.cpp /Fe:Build\encoder-revision-test.exe && Build\encoder-revision-test.exe && cl /nologo /EHsc /std:c++20 /W4 /WX pi5-graphics\tests\shader-varying-sqrt-test.cpp pi5-graphics\native\shader.cpp pi5-graphics\native\validate.cpp /Fe:Build\shader-varying-sqrt-test.exe /link d3dcompiler.lib && Build\shader-varying-sqrt-test.exe'
+          & cmd.exe /d /s /c $cmd
+          if($LASTEXITCODE){throw 'V3D encoder/shader regression failed'}
+
+      - name: Create test signing certificate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $cert=New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Farjanatech RPi5 DWM Ranked Stability Test v10' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(1)
+          "CERT_THUMB=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Export-Certificate -Cert $cert -FilePath Build\Farjanatech-RPi5-DWM-UMD-Diagnostic-Test.cer | Out-Null
+
+      - name: Build and sign ARM64 graphics payload
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          .\build.ps1 -Driver pi5-graphics -Output (Join-Path $PWD 'Build') -Configuration Release -SdkVersion '10.0.26100.0' -WdkVersion '10.0.26100.0' -CertificateThumbprint $env:CERT_THUMB
+          foreach($f in @('Pi5Graphics.sys','Pi5GraphicsPower.sys','Pi5D3D.dll','pi5graphics.inf','pi5graphics.cat')){
+            if(!(Test-Path (Join-Path 'Build\pi5-graphics' $f))){throw "Missing payload file: $f"}
+          }
+
+      - name: Assemble signed v10 package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $root='Build\RPi5-DWM-Ranked-Stability-Test-Kit-v10.0'
+          $payload=Join-Path $root 'Payload\Graphics'
+          New-Item $root,$payload -ItemType Directory -Force | Out-Null
+          Copy-Item tools\dwm-umd-auto-test-kit\* $root -Force
+          foreach($f in @('Pi5Graphics.sys','Pi5GraphicsPower.sys','Pi5D3D.dll','pi5graphics.inf','pi5graphics.cat','LICENSE.txt','EDID-LICENSE.txt')){
+            Copy-Item (Join-Path 'Build\pi5-graphics' $f) $payload -Force
+          }
+          Copy-Item Build\Farjanatech-RPi5-DWM-UMD-Diagnostic-Test.cer $payload -Force
+          @(
+            'RPi5 DWM Ranked Stability Test Kit v10.0',
+            ('Branch: '+$env:GITHUB_REF_NAME),
+            ('Commit: '+$env:GITHUB_SHA),
+            'Graphics behavior: v9 exact THRSW,NOP,NOP final-section epilogue retained.',
+            'Ranking change: DriverVer 10/10/2026,1.0.0.10; recovered baseline is 1.0.0.0.',
+            'The baseline package remains in Driver Store; no baseline isolation/removal is part of this build.',
+            'Build configuration: Release ARM64.'
+          ) | Set-Content (Join-Path $root 'BUILD-PROVENANCE.txt') -Encoding UTF8
+          Get-ChildItem $root -Recurse -File | Sort-Object FullName | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),($_.FullName.Substring((Resolve-Path $root).Path.Length+1).Replace('\','/'))
+          } | Set-Content (Join-Path $root 'SHA256SUMS.txt') -Encoding ASCII
+          $zip='Build\RPi5-DWM-Ranked-Stability-Test-Kit-v10.0.zip'
+          Compress-Archive -Path "$root\*" -DestinationPath $zip -CompressionLevel Optimal -Force
+          Get-FileHash $zip -Algorithm SHA256 | Format-List
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RPi5-DWM-Ranked-Stability-Test-Kit-v10.0
+          path: Build/RPi5-DWM-Ranked-Stability-Test-Kit-v10.0.zip
+          if-no-files-found: error
