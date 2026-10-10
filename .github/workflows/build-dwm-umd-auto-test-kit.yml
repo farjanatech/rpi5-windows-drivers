@@ -1,9 +1,9 @@
-name: Build DWM 64-Register Vertex Fallback Test Kit v7
+name: Build DWM 2-Thread Epilogue Fix Test Kit v9
 
 on:
   push:
     branches:
-      - dwm-64reg-vertex-fallback-v7
+      - dwm-2thread-epilogue-fix-v9
     paths:
       - 'pi5-graphics/**'
       - 'tools/dwm-umd-auto-test-kit/**'
@@ -31,6 +31,7 @@ jobs:
             'pi5-graphics/native/abi.h',
             'pi5-graphics/native/shader.cpp',
             'pi5-graphics/native/encode.cpp',
+            'pi5-graphics/native/encode.h',
             'pi5-graphics/native/validate.cpp',
             'pi5-graphics/native/validate.h',
             'pi5-graphics/native/qpu-alu.h',
@@ -66,6 +67,10 @@ jobs:
           if($validate -notmatch 'uint64_t \*registers'){throw 'Validator register mask is not 64-bit'}
           $gpu=Get-Content pi5-graphics/kmd/gpu.cpp -Raw
           if($gpu -notmatch '0xffffffff00000000' -or $gpu -notmatch 'fourThreadMask'){throw 'KMD thread-mode selection is missing'}
+          if($gpu -notmatch 'finalThreadMask' -or $gpu -notmatch 'i==1&&!patches.count'){throw '64-register final-section selection is missing'}
+          $encodeh=Get-Content pi5-graphics/native/encode.h -Raw
+          if($encodeh -notmatch 'finalThreadMask'){throw 'Draw final-thread mask is missing'}
+          if($shader -notmatch 'finalSectionVertex' -or $shader -notmatch '!internalThreadSwitch'){throw 'Corrected 2-thread vertex epilogue is missing'}
 
       - name: Parse automatic test PowerShell
         shell: pwsh
@@ -130,7 +135,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference='Stop'
-          $root='Build\RPi5-DWM-64Reg-Vertex-Fallback-Test-Kit-v7.0'
+          $root='Build\RPi5-DWM-2Thread-Epilogue-Fix-Test-Kit-v9.0'
           $payload=Join-Path $root 'Payload\Graphics'
           New-Item $root,$payload -ItemType Directory -Force | Out-Null
 
@@ -141,17 +146,17 @@ jobs:
           Copy-Item Build\Farjanatech-RPi5-DWM-UMD-Diagnostic-Test.cer $payload -Force
 
           @(
-            'RPi5 DWM 64-Register Vertex Fallback Test Kit v7.0',
+            'RPi5 DWM 2-Thread Epilogue Fix Test Kit v9.0',
             ('Branch: '+$env:GITHUB_REF_NAME),
             ('Commit: '+$env:GITHUB_SHA),
             'Universal Graphics base: c4d7a9feaeaa99f032547e33462ad056a4508c14',
-            'Prior fixes retained: 32 vertex-input scalars, lazy vertex loads, 32 pixel varyings, DXBC SQRT, EXP and LOG.',
-            'v6 evidence: all 1025 current first-fatal records are linked vertex shader 0x7e103b42 with 4-thread register-bank exhaustion.',
-            'Hardware basis: V3D 4.x+ provides 32 physical registers in 4-thread mode and 64 in 2-thread mode.',
-            'Fix: keep 32-register/4-thread compilation first, then retry vertex shaders with RF0-RF63 only on register pressure.',
-            'KMD derives the 4-thread bit from the validated 64-bit physical-register mask; high-register programs run 2-thread.',
-            'A stress vertex regression must validate RF32-RF63 use before packaging.',
-            'First-fatal diagnostics remain enabled to expose the next blocker.',
+            'Prior clean-v7 fixes retained: 32 vertex inputs, lazy loads, 32 varyings, SQRT/EXP/LOG and RF32-RF63 vertex fallback.',
+            'v7.3 captured failing Month-selector program: VS 0x7e103b42 + PS 0xe86ffe32, 917 QPU words, 101 uniforms, 28 varyings, using RF32-RF63.',
+            'Offline audit: captured program ends VPM stores -> THRSW,THRSW -> NOP -> NOP,THRSW,NOP,NOP.',
+            'Mesa V3D semantics: start-in-final-thread-section means last-THRSW is already satisfied; a consecutive THRSW pair there is invalid, while a single later THRSW is the program-end switch.',
+            'Fix: high-register vertex shaders with no internal TMU switch start in final section and omit the old consecutive last-THRSW pair, retaining only the program-end THRSW and delay slots.',
+            'CI requires the high-register stress shader to contain exactly one THRSW and the matching state-record final-section bit.',
+            'First-fatal diagnostics remain enabled.',
             'Build configuration: Release ARM64',
             'Automatic flow: install -> reboot -> record -> open Date & time -> finalize -> exact-INF rollback -> verify.'
           ) | Set-Content (Join-Path $root 'BUILD-PROVENANCE.txt') -Encoding UTF8
@@ -160,12 +165,12 @@ jobs:
             '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),($_.FullName.Substring((Resolve-Path $root).Path.Length+1).Replace('\','/'))
           } | Set-Content (Join-Path $root 'SHA256SUMS.txt') -Encoding ASCII
 
-          $zip='Build\RPi5-DWM-64Reg-Vertex-Fallback-Test-Kit-v7.0.zip'
+          $zip='Build\RPi5-DWM-2Thread-Epilogue-Fix-Test-Kit-v9.0.zip'
           Compress-Archive -Path "$root\*" -DestinationPath $zip -CompressionLevel Optimal -Force
           Get-FileHash $zip -Algorithm SHA256 | Format-List
 
       - uses: actions/upload-artifact@v4
         with:
-          name: RPi5-DWM-64Reg-Vertex-Fallback-Test-Kit-v7.0
-          path: Build/RPi5-DWM-64Reg-Vertex-Fallback-Test-Kit-v7.0.zip
+          name: RPi5-DWM-2Thread-Epilogue-Fix-Test-Kit-v9.0
+          path: Build/RPi5-DWM-2Thread-Epilogue-Fix-Test-Kit-v9.0.zip
           if-no-files-found: error
