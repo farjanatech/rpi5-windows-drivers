@@ -42,6 +42,21 @@ NTSTATUS BddTrace(ULONG id, NTSTATUS status, ULONG a, ULONG b)
     static ENTRY entries[128];
     static volatile LONG next=0;
     if(KeGetCurrentIrql()!=PASSIVE_LEVEL)return status;
+#ifdef PI5_C1_SCANOUT_PROBE
+    if(id>=260&&id<=267){
+        // Keep startup experiment evidence even when the regular trace fills.
+        static ENTRY probe[16];static LONG probeNext=0;
+        LONG p=InterlockedIncrement(&probeNext)-1;if(p>=16)return status;
+        probe[p]={id,(ULONG)status,a,b};HANDLE key;OBJECT_ATTRIBUTES attrs;
+        UNICODE_STRING path=RTL_CONSTANT_STRING(L"\\Registry\\Machine\\HARDWARE\\Pi5DisplayDiagnostics");
+        UNICODE_STRING name=RTL_CONSTANT_STRING(L"C1ScanoutProbe");
+        InitializeObjectAttributes(&attrs,&path,OBJ_CASE_INSENSITIVE|OBJ_KERNEL_HANDLE,NULL,NULL);
+        if(NT_SUCCESS(ZwCreateKey(&key,KEY_SET_VALUE,&attrs,0,NULL,REG_OPTION_VOLATILE,NULL))){
+            (void)ZwSetValueKey(key,&name,0,REG_BINARY,probe,(p+1)*sizeof(ENTRY));ZwClose(key);
+        }
+        return status;
+    }
+#endif
     LONG n=InterlockedIncrement(&next)-1;
     if(n>=128)return status;
     entries[n]={id,(ULONG)status,a,b};

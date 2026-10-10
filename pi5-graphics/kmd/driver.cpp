@@ -140,7 +140,7 @@ static void LockGpu(Adapter*a){(void)KeWaitForSingleObject(&a->gpuLock,Executive
 static void UnlockGpu(Adapter*a){(void)KeReleaseMutex(&a->gpuLock,FALSE);}
 #ifdef PI5_FULL_DISPLAY
 static BOOLEAN ConsumeFlipTrial(PCWSTR valueName,BOOLEAN defaultValue=FALSE){
-#if DBG
+#if DBG || defined(PI5_C1_SCANOUT_PROBE)
     // DEBUG overrides are one-use and volatile. A reload or reboot returns
     // to the hardware-verified MMIO/opaque defaults; async copying stays off.
     UNICODE_STRING path=RTL_CONSTANT_STRING(L"\\Registry\\Machine\\HARDWARE\\Pi5GraphicsTrial"),name;RtlInitUnicodeString(&name,valueName);
@@ -407,6 +407,14 @@ static NTSTATUS APIENTRY Start(PVOID context,DXGK_START_INFO*startInfo,DXGKRNL_I
 #ifdef PI5_FULL_DISPLAY
     a->primary={};a->primary.offset=MAXULONGLONG;a->secondaryPrimary={};a->secondaryPrimary.offset=MAXULONGLONG;a->primaryPending=a->releasePost=0;s=a->display->StartDevice(startInfo,dxgk,views,children);if(s!=STATUS_SUCCESS){(void)Stop(a);return Pi5Trace(129,s);}
     {auto&native=a->display->PostNative();s=a->gpu.AttachScanout(native.ScanoutMemory(),native.ScanoutBytes());if(s!=STATUS_SUCCESS){(void)Stop(a);return Pi5Trace(78,s);}}
+#ifdef PI5_C1_SCANOUT_PROBE
+    // Before VidMm can allocate from the segment or Windows enables VSync.
+    // The volatile administrator-owned switch is consumed before the trial.
+    if(a->siliconRevision==0&&ConsumeFlipTrial(L"C1ScanoutProbe")){
+        s=a->display->PostNative().ProbeC1Scanout(a->memory,a->physical,a->memoryBytes);
+        if(s!=STATUS_SUCCESS){(void)Stop(a);return Pi5Trace(168,s);}
+    }
+#endif
 #if DBG
     // Exercise each active physical output before enabling OS notifications.
     for(ULONG port=0;port<MAX_CHILDREN;++port)if(a->display->Native(port).Active()){

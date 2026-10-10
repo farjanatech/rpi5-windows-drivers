@@ -85,6 +85,29 @@ jobs:
           & cmd.exe /d /s /c $command
           if($LASTEXITCODE){throw 'ARM64 hardware probe build failed'}
 
+      - name: Build isolated WDDM 1.2 C1 scanout probe
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          .\build.ps1 -Driver pi5-graphics -Output (Join-Path $PWD 'Build\c1-probe') -Configuration Release -SdkVersion 10.0.26100.0 -WdkVersion 10.0.26100.0 -C1ScanoutProbe -CertificateThumbprint $env:CERT_THUMB
+          $inf=Get-Content Build\c1-probe\pi5-graphics\pi5graphics.inf -Raw
+          if($inf -notmatch 'DriverVer=10/10/2026,1\.0\.0\.16'){throw 'Probe identity missing'}
+          $root='Build\RPi5-C1-Scanout-Probe-v16'
+          New-Item $root -ItemType Directory -Force | Out-Null
+          Copy-Item Build\c1-probe\pi5-graphics "$root\Graphics" -Recurse
+          Copy-Item Build\Wddm20-Test.cer,Build\hardware-3d-smoke.exe $root
+          Copy-Item pi5-graphics\C1-SCANOUT-PROBE.txt $root
+          @("Commit: $env:GITHUB_SHA",'WDDM 1.2 C1 startup probe, version 1.0.0.16.','Copy presentation stays enabled. No WDDM 2.0 capability or direct desktop flips.','A one-use volatile administrator switch is required to run the bounded startup test.') | Set-Content "$root\PROVENANCE.txt"
+          Get-ChildItem $root -Recurse -File | Sort-Object FullName | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant(),($_.FullName.Substring((Resolve-Path $root).Path.Length+1).Replace('\','/'))
+          } | Set-Content "$root\SHA256SUMS.txt" -Encoding ascii
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RPi5-C1-Scanout-Probe-v16
+          path: Build/RPi5-C1-Scanout-Probe-v16
+          if-no-files-found: error
+
       - name: Package candidate with provenance
         shell: pwsh
         run: |
