@@ -21,7 +21,22 @@ reboot and passed the 120-frame hardware shader/readback test. Candidate v13
 completed display startup but Windows stopped it after adapter-capability
 queries; it was removed and v10 passed the same test after restoration. V14
 adds the missing physical-adapter response, including the 20-byte WDDM 2.0
-output size actually requested by Windows. It still requires hardware validation.
+output size actually requested by Windows. V14 also failed device startup with
+Code 43: the physical-adapter query succeeded, but Windows stopped the adapter
+before QUERYSEGMENT4. Neither candidate enabled the Task Manager GPU graph.
+
+Both candidates were removed. During the last live reload, v10 failed its display
+common-buffer allocation with STATUS_INSUFFICIENT_RESOURCES. It recovered after
+a subsequent unclean reboot and again passed all 120 hardware shader/readback
+checks, with no PnP problem. The recovery task completed and removed itself.
+This establishes rendering after that boot, not long-term stability or the cause
+of the reboot. Windows recorded no usable bugcheck code or crash dump.
+
+The all-keyword circular DxgKrnl trace was overwhelmed by per-frame events and
+did not retain the candidate's startup interval. A future diagnostic capture
+must select startup/diagnostic keywords and verify the retained time range;
+absence of an error in that trace does not explain the startup rejection.
+Keep this change as a draft until initialization and the gates below pass.
 
 The candidate registers the WDDM 2.0 interface, reports one physical-address
 V3D 3D node and its physical-adapter capabilities, enumerates the existing CPU-visible reserved memory through
