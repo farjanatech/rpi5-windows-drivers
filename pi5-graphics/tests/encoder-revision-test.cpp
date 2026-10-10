@@ -65,6 +65,33 @@ static int test_revision(uint32_t revision, uint8_t e0, uint8_t e1, uint8_t e2)
 }
 
 
+
+static int test_final_thread_section()
+{
+    uint8_t storage[256 * 1024] = {};
+    pi5::Draw d = {};
+    d.width=64; d.height=64; d.pitch=256; d.target=0x00200000; d.tile=0x00300000;
+    d.coordinateCode=0x00400000; d.vertexCode=0x00500000; d.pixelCode=0x00600000;
+    d.coordinateUniforms=0x00700000; d.vertexUniforms=0x00710000; d.pixelUniforms=0x00720000;
+    d.vertexAddress=0x00800000; d.vertexStride=24; d.vertexCount=3; d.vertexScalars=6; d.varyingScalars=2;
+    d.v3dRevision=6; d.fourThreadMask=0b101; d.finalThreadMask=0b010;
+    pi5::EncodedCommands out={}; const char *error=nullptr;
+    if(!pi5::EncodeDrawBatch(&d,1,0x00100000,storage,sizeof(storage),out,error)){
+        std::printf("FAIL final-section encode: %s\n",error?error:"<none>");return 1;
+    }
+    const uint32_t ep=d.pixelCode|1u,ev=d.vertexCode|2u,ec=d.coordinateCode|1u;
+    for(uint32_t off=0;off+32<=out.bytes;++off){
+        uint32_t p=0,pu=0,v=0,vu=0,c=0,cu=0;
+        std::memcpy(&p,storage+off+8,4);std::memcpy(&pu,storage+off+12,4);
+        std::memcpy(&v,storage+off+16,4);std::memcpy(&vu,storage+off+20,4);
+        std::memcpy(&c,storage+off+24,4);std::memcpy(&cu,storage+off+28,4);
+        if(p==ep&&pu==d.pixelUniforms&&v==ev&&vu==d.vertexUniforms&&c==ec&&cu==d.coordinateUniforms){
+            std::puts("PASS final-section shader-state bit");return 0;
+        }
+    }
+    std::puts("FAIL final-section shader-state record not found");return 2;
+}
+
 static int test_vertex_scalars(uint32_t scalars, bool expected)
 {
     uint8_t storage[256 * 1024] = {};
@@ -164,6 +191,7 @@ int main()
     if (test_vertex_scalars(32, true)) return 1;
     if (test_vertex_scalars(33, false)) return 1;
     if (test_varying_flag_chunks()) return 1;
+    if (test_final_thread_section()) return 1;
 
     pi5::Draw defaults = {};
     if (defaults.v3dRevision != 10) {
