@@ -151,7 +151,19 @@ static int compile_vertex_pressure_shader()
                     static_cast<unsigned long long>(registers));
         return 5;
     }
-    std::printf("PASS vertex-pressure shader: validated high-register mask=%016llx (2-thread fallback)\n",
+    constexpr uint64_t Nop=UINT64_C(0x38003186bb03f000);
+    constexpr uint64_t Switch=UINT64_C(0x38203186bb03f000);
+    unsigned switches=0;
+    for(auto word:shader.code)if(word==Switch)++switches;
+    if(switches!=1||shader.code.size()<4||
+       shader.code[shader.code.size()-4]!=Nop||
+       shader.code[shader.code.size()-3]!=Switch||
+       shader.code[shader.code.size()-2]!=Nop||
+       shader.code[shader.code.size()-1]!=Nop){
+        std::printf("FAIL: final-section 2-thread epilogue switches=%u words=%zu\n",switches,shader.code.size());
+        return 6;
+    }
+    std::printf("PASS vertex-pressure shader: high-register mask=%016llx and single program-end THRSW\n",
                 static_cast<unsigned long long>(registers));
     return 0;
 }
