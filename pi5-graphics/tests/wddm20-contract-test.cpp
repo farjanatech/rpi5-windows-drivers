@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BSD-2-Clause-Patent
-#define DXGKDDI_INTERFACE_VERSION 0x300E
+#define PI5_EXPERIMENTAL_WDDM20 1
+#include "../kmd/ddi-version.h"
 #define NOMINMAX
 #include <ntddk.h>
 #include <windef.h>
