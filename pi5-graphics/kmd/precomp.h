@@ -1,5 +1,5 @@
 #pragma once
-#define DXGKDDI_INTERFACE_VERSION 0x300E
+#include "ddi-version.h"
 #define D3D_UMD_INTERFACE_VERSION 0x3004
 #define NOMINMAX
 extern "C" {

@@ -42,6 +42,10 @@ NTSTATUS PI5_DISPLAY_HW::FindPostPort(const DXGK_DEVICE_INFO *device,const DXGK_
                     BddTrace(118+candidate*4,STATUS_SUCCESS,read(base),read(base+12));
                     BddTrace(119+candidate*4,STATUS_SUCCESS,read(base+20),read(base+24));
                     BddTrace(120+candidate*4,STATUS_SUCCESS,read(base+28),display->Pitch);
+                    // Include the position/alpha words checked by C1 below.
+                    // A rejected POST list must be diagnosable before any
+                    // display-register writes or ownership changes.
+                    BddTrace(126+candidate,STATUS_SUCCESS,read(base+4),read(base+8));
                 }
                 // D0 remains Damian's original strict path.
                 if(d0){
@@ -832,6 +836,84 @@ NTSTATUS PI5_DISPLAY_HW::QueueDirectScanout(ULONGLONG offset) {
     InterlockedExchange(&Pending,static_cast<LONG>(index));PendingArmed=0;
     PublishPendingFlip();return STATUS_SUCCESS;
 }
+#ifdef PI5_C1_SCANOUT_PROBE
+// Startup-only diagnostic. No additional DMA allocation and no user pointer
+// enters the display ISR. Both backing allocations remain owned until Stop.
+struct PI5_C1_PROBE {PI5_DISPLAY_HW *Self;LONGLONG SavedAddress;BOOLEAN Finish;NTSTATUS Status;};
+BOOLEAN PI5_DISPLAY_HW::SynchronizeProbe(PVOID context) {
+    auto p=static_cast<PI5_C1_PROBE*>(context);
+    p->Status=p->Self->QueueDirectScanout(0);return TRUE;
+}
+BOOLEAN PI5_DISPLAY_HW::SynchronizeProbeRestore(PVOID context) {
+    auto p=static_cast<PI5_C1_PROBE*>(context);auto self=p->Self;
+    p->Status=STATUS_INVALID_DEVICE_STATE;
+    if(!self->Owned||self->Enabled||self->ModeChanging)return TRUE;
+    // Use the actual latched list, even if a trial timed out before its ISR.
+    ULONG head=self->Read(0,0x11c)&0xfff;
+    if(head!=self->OwnHead&&head!=self->OwnHead+10)return TRUE;
+    ULONG front=(head-self->OwnHead)/10,index=1u-front;
+    if(p->Finish&&(self->Pending>=0||front!=static_cast<ULONG>(self->Front)))return TRUE;
+    ULONGLONG address=static_cast<ULONGLONG>(self->Dma.QuadPart)+4096+ULONGLONG(index)*self->FrameBytes;
+    self->Write(0,0x4000+(self->OwnHead+index*10+5)*4,self->UpmDescriptor|static_cast<ULONG>(address>>32));
+    self->Write(0,0x4000+(self->OwnHead+index*10+6)*4,static_cast<ULONG>(address));
+    self->DirectPixels[index]=nullptr;self->DirectAddresses[index]=0;
+    if(p->Finish){
+        self->DirectSegment=nullptr;self->DirectBase=0;self->DirectBytes=0;
+    }else{
+        self->PendingCompletion=nullptr;self->PendingAddress=p->SavedAddress;
+        InterlockedExchange(&self->Front,static_cast<LONG>(front));
+        InterlockedExchange(&self->Pending,static_cast<LONG>(index));self->PendingArmed=0;
+        self->PublishPendingFlip();
+    }
+    p->Status=STATUS_SUCCESS;return TRUE;
+}
+NTSTATUS PI5_DISPLAY_HW::ProbeC1Scanout(PVOID memory,PHYSICAL_ADDRESS physical,ULONG bytes) {
+    PAGED_CODE();
+    if(SiliconRevision!=0||!Owned||!FullDisplay||Enabled||DirectSegment||Pending>=0||ModeChanging||
+       !memory||bytes<FrameBytes)return STATUS_INVALID_DEVICE_STATE;
+    // Use the unchanged firmware desktop in every stage. This isolates HVS
+    // addressing from V3D writes, primary tiling, DWM, and changing pitches.
+    ULONG words=Pitch*Height/4;
+    auto source=static_cast<const volatile ULONG*>(Framebuffer());
+    auto destination=static_cast<volatile ULONG*>(memory);
+    for(ULONG i=0;i<words;++i)destination[i]=source[i];
+    KeMemoryBarrier();
+    for(ULONG i=0;i<words;++i)if(destination[i]!=source[i])return BddTrace(260,STATUS_DATA_ERROR,i,words);
+    PHYSICAL_ADDRESS native=Dma;native.QuadPart+=4096;
+    BddTrace(260,STATUS_SUCCESS,physical.LowPart,static_cast<ULONG>(physical.HighPart));
+    BddTrace(261,STATUS_SUCCESS,native.LowPart,static_cast<ULONG>(native.HighPart));
+    PI5_C1_PROBE request={this,LogicalAddress,FALSE,STATUS_UNSUCCESSFUL};
+    NTSTATUS trial=STATUS_SUCCESS;BOOLEAN called=FALSE;
+    const ULONG beforeUpm=Read(0,0x22c),beforeAxi=Read(0,0x230);
+    for(ULONG stage=0;stage<2&&trial==STATUS_SUCCESS;++stage){
+        trial=AttachDirectSegment(stage?memory:ScanoutMemory(),stage?physical:native,stage?bytes:ScanoutBytes());
+        if(trial==STATUS_SUCCESS){
+            trial=Dxgk->DxgkCbSynchronizeExecution(Dxgk->DeviceHandle,SynchronizeProbe,&request,0,&called);
+            if(trial==STATUS_SUCCESS)trial=called?request.Status:STATUS_UNSUCCESSFUL;
+        }
+        if(trial==STATUS_SUCCESS)trial=WaitForFlip();
+        // Bounded at four seconds per stage; at most 250 ms per refresh wait.
+        ULONGLONG end=KeQueryInterruptTime()+40000000;
+        while(trial==STATUS_SUCCESS&&KeQueryInterruptTime()<end)trial=WaitForRefresh(1);
+        BddTrace(262+stage,trial,Read(0,0x110),Read(0,0x11c));
+        BddTrace(264+stage,trial,Read(0,0x22c),Read(0,0x230));
+    }
+    // Restore BOTH lists to their respective native buffers. Restoring only
+    // the current head would let a future copy overwrite a scanned buffer.
+    called=FALSE;
+    NTSTATUS restored=Dxgk->DxgkCbSynchronizeExecution(Dxgk->DeviceHandle,SynchronizeProbeRestore,&request,0,&called);
+    if(restored==STATUS_SUCCESS)restored=called?request.Status:STATUS_UNSUCCESSFUL;
+    if(restored==STATUS_SUCCESS)restored=WaitForFlip();
+    if(restored==STATUS_SUCCESS){
+        request.Finish=TRUE;called=FALSE;
+        restored=Dxgk->DxgkCbSynchronizeExecution(Dxgk->DeviceHandle,SynchronizeProbeRestore,&request,0,&called);
+        if(restored==STATUS_SUCCESS)restored=called?request.Status:STATUS_UNSUCCESSFUL;
+    }
+    BddTrace(266,trial,beforeUpm,beforeAxi);
+    // A failed trial may continue only after the copy path is fully restored.
+    return BddTrace(267,restored,Read(0,0x110),Read(0,0x11c));
+}
+#endif
 BOOLEAN PI5_DISPLAY_HW::SynchronizeFlip(PVOID context) {
     auto request=static_cast<PI5_FLIP_REQUEST*>(context);auto self=request->Self;
     request->Status=STATUS_INVALID_DEVICE_STATE;

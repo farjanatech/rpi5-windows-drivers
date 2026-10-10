@@ -21,9 +21,12 @@ param(
     [string]$CertificateThumbprint = '',
     [ValidateSet('Debug', 'Release')]
     [string]$Configuration = 'Release',
-    [switch]$Analyze
+    [switch]$Analyze,
+    [switch]$ExperimentalWddm20,
+    [switch]$C1ScanoutProbe
 )
 $ErrorActionPreference = 'Stop'
+if ($ExperimentalWddm20 -and $C1ScanoutProbe) { throw 'The C1 probe must run under the WDDM 1.2 control.' }
 Set-StrictMode -Version Latest
 $Output = [IO.Path]::GetFullPath($Output)
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -131,6 +134,8 @@ foreach ($name in $names) {
             Work = $work; Init = $init; KernelInclude = $kernelInclude; KernelLib = $kernelLib
             KmdfInclude = $kmdfInclude; KmdfLib = $kmdfLib
             Configuration = $Configuration; Analyze = $Analyze
+            ExperimentalWddm20 = $ExperimentalWddm20
+            C1ScanoutProbe = $C1ScanoutProbe
         }
         & (Join-Path $PSScriptRoot 'pi5-graphics\build.ps1') @graphicsArguments
         $staging = Join-Path $work 'package'

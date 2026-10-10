@@ -1,6 +1,9 @@
 #include "precomp.h"
 #include "gpu.h"
 #include <acpiioct.h>
+#ifdef PI5_EXPERIMENTAL_WDDM20
+#include "wddm20.h"
+#endif
 
 static NTSTATUS Pi5EvalAcpiInteger(PDEVICE_OBJECT device,const CHAR name[4],ULONG *value)
 {
@@ -117,7 +120,11 @@ NTSTATUS Pi5Trace(ULONG id,NTSTATUS status,ULONG a,ULONG b){
     // Preserve the recent ring and publish failures immediately. Rewriting the
     // whole volatile registry value for every draw/fence stalls the producer.
     static volatile LONG64 nextFlush=0;
-    if(NT_SUCCESS(status)){
+    if(NT_SUCCESS(status)
+#ifdef PI5_EXPERIMENTAL_WDDM20
+        &&id!=166&&id!=167 // retain each startup query result before OS teardown
+#endif
+    ){
         LONG64 now=static_cast<LONG64>(KeQueryInterruptTime()),deadline=InterlockedCompareExchange64(&nextFlush,0,0);
         if(now<deadline||InterlockedCompareExchange64(&nextFlush,now+1000000,deadline)!=deadline)return status;
     }
@@ -133,7 +140,7 @@ static void LockGpu(Adapter*a){(void)KeWaitForSingleObject(&a->gpuLock,Executive
 static void UnlockGpu(Adapter*a){(void)KeReleaseMutex(&a->gpuLock,FALSE);}
 #ifdef PI5_FULL_DISPLAY
 static BOOLEAN ConsumeFlipTrial(PCWSTR valueName,BOOLEAN defaultValue=FALSE){
-#if DBG
+#if DBG || defined(PI5_C1_SCANOUT_PROBE)
     // DEBUG overrides are one-use and volatile. A reload or reboot returns
     // to the hardware-verified MMIO/opaque defaults; async copying stays off.
     UNICODE_STRING path=RTL_CONSTANT_STRING(L"\\Registry\\Machine\\HARDWARE\\Pi5GraphicsTrial"),name;RtlInitUnicodeString(&name,valueName);
@@ -400,6 +407,14 @@ static NTSTATUS APIENTRY Start(PVOID context,DXGK_START_INFO*startInfo,DXGKRNL_I
 #ifdef PI5_FULL_DISPLAY
     a->primary={};a->primary.offset=MAXULONGLONG;a->secondaryPrimary={};a->secondaryPrimary.offset=MAXULONGLONG;a->primaryPending=a->releasePost=0;s=a->display->StartDevice(startInfo,dxgk,views,children);if(s!=STATUS_SUCCESS){(void)Stop(a);return Pi5Trace(129,s);}
     {auto&native=a->display->PostNative();s=a->gpu.AttachScanout(native.ScanoutMemory(),native.ScanoutBytes());if(s!=STATUS_SUCCESS){(void)Stop(a);return Pi5Trace(78,s);}}
+#ifdef PI5_C1_SCANOUT_PROBE
+    // Before VidMm can allocate from the segment or Windows enables VSync.
+    // The volatile administrator-owned switch is consumed before the trial.
+    if(a->siliconRevision==0&&ConsumeFlipTrial(L"C1ScanoutProbe")){
+        s=a->display->PostNative().ProbeC1Scanout(a->memory,a->physical,a->memoryBytes);
+        if(s!=STATUS_SUCCESS){(void)Stop(a);return Pi5Trace(168,s);}
+    }
+#endif
 #if DBG
     // Exercise each active physical output before enabling OS notifications.
     for(ULONG port=0;port<MAX_CHILDREN;++port)if(a->display->Native(port).Active()){
@@ -477,14 +492,34 @@ static NTSTATUS APIENTRY Power(PVOID context,ULONG,DEVICE_POWER_STATE state,POWE
 }
 template<class F,ULONG Id> struct Unsupported;
 template<class... A,ULONG Id>struct Unsupported<NTSTATUS(APIENTRY*)(A...),Id>{static NTSTATUS APIENTRY Call(A...){return Pi5Trace(Id,STATUS_NOT_SUPPORTED);}};
-static NTSTATUS APIENTRY Query(HANDLE h,const DXGKARG_QUERYADAPTERINFO *q){
+static NTSTATUS QueryInfo(HANDLE h,const DXGKARG_QUERYADAPTERINFO *q){
+    if(!h||!q||!q->pOutputData)return STATUS_INVALID_PARAMETER;
     auto a=static_cast<Adapter*>(h);Pi5Trace(20,STATUS_SUCCESS,q->Type,q->OutputDataSize);
+#ifdef PI5_EXPERIMENTAL_WDDM20
+    if(q->Type==DXGKQAITYPE_PHYSICALADAPTERCAPS)return Pi5Trace(165,pi5::QueryPhysicalAdapter(*q,a->dxgk.DeviceHandle),q->InputDataSize,q->OutputDataSize);
+    if(q->Type==DXGKQAITYPE_QUERYSEGMENT4)return pi5::QueryPhysicalSegment(*q,a->physical,a->memoryBytes,sizeof(Dma));
+    if(q->Type==DXGKQAITYPE_DISPLAY_DRIVERCAPS_EXTENSION){
+        if(q->OutputDataSize<sizeof(DXGK_DISPLAY_DRIVERCAPS_EXTENSION))return STATUS_BUFFER_TOO_SMALL;
+        // Preserve the existing physical display-mode path; do not enable the
+        // imported BDD's virtual-mode flag without implementing that contract.
+        RtlZeroMemory(q->pOutputData,sizeof(DXGK_DISPLAY_DRIVERCAPS_EXTENSION));return STATUS_SUCCESS;
+    }
+    if(q->Type==DXGKQAITYPE_NUMPOWERCOMPONENTS){
+        if(q->OutputDataSize<sizeof(UINT))return STATUS_BUFFER_TOO_SMALL;
+        *static_cast<UINT*>(q->pOutputData)=0;return STATUS_SUCCESS;
+    }
+#endif
     if(q->Type==DXGKQAITYPE_UMDRIVERPRIVATE){if(q->OutputDataSize!=sizeof(Pi5AdapterInfo))return STATUS_INVALID_PARAMETER;Pi5AdapterInfo info={PI5_UMD_MAGIC,PI5_UMD_ABI,71,0};
 #ifdef PI5_FULL_DISPLAY
         info.Caps=PI5_ADAPTER_NATIVE_DISPLAY;
 #endif
         *static_cast<Pi5AdapterInfo*>(q->pOutputData)=info;return STATUS_SUCCESS;}
     if(q->Type==DXGKQAITYPE_DRIVERCAPS){if(q->OutputDataSize<sizeof(DXGK_DRIVERCAPS))return STATUS_BUFFER_TOO_SMALL;auto c=static_cast<DXGK_DRIVERCAPS*>(q->pOutputData);RtlZeroMemory(c,sizeof(*c));c->HighestAcceptableAddress.QuadPart=MAXLONGLONG;c->WDDMVersion=DXGKDDI_WDDMv1_2;c->SupportNonVGA=TRUE;c->SchedulingCaps.MultiEngineAware=1;c->GpuEngineTopology.NbAsymetricProcessingNodes=1;c->PreemptionCaps.GraphicsPreemptionGranularity=D3DKMDT_GRAPHICS_PREEMPTION_DMA_BUFFER_BOUNDARY;c->PreemptionCaps.ComputePreemptionGranularity=D3DKMDT_COMPUTE_PREEMPTION_DMA_BUFFER_BOUNDARY;
+#ifdef PI5_EXPERIMENTAL_WDDM20
+        pi5::SetPhysicalSchedulerCaps(*c);
+        // MemoryManagementCaps.GpuMmuSupported/IoMmuSupported/VirtualAddressingSupported
+        // remain zero: this engine uses allocation lists, Patch and SubmitCommand.
+#endif
 #ifdef PI5_FULL_DISPLAY
         c->SchedulingCaps.VSyncPowerSaveAware=1;c->PresentationCaps.DriverSupportsCddDwmInterop=1;c->PresentationCaps.NoScreenToScreenBlt=1;c->PresentationCaps.NoOverlapScreenBlt=1;c->PresentationCaps.AlignmentShift=6;c->PresentationCaps.MaxTextureWidthShift=2;c->PresentationCaps.MaxTextureHeightShift=2;
         c->FlipCaps.FlipOnVSyncMmIo=a->mmioFlips;c->FlipCaps.FlipOnVSyncWithNoWait=a->asyncFlips||a->mmioFlips;
@@ -494,6 +529,16 @@ static NTSTATUS APIENTRY Query(HANDLE h,const DXGKARG_QUERYADAPTERINFO *q){
     if(q->Type==DXGKQAITYPE_QUERYSEGMENT3){if(q->OutputDataSize<sizeof(DXGK_QUERYSEGMENTOUT3))return STATUS_BUFFER_TOO_SMALL;auto o=static_cast<DXGK_QUERYSEGMENTOUT3*>(q->pOutputData);o->NbSegment=1;o->PagingBufferSegmentId=0;o->PagingBufferSize=65536;o->PagingBufferPrivateDataSize=sizeof(Dma);
         if(o->pSegmentDescriptor){auto s=o->pSegmentDescriptor;RtlZeroMemory(s,sizeof(*s));s->CpuTranslatedAddress=a->physical;s->Size=a->memoryBytes;s->Flags.CpuVisible=1;s->Flags.PopulatedFromSystemMemory=1;}return STATUS_SUCCESS;}
     return STATUS_NOT_SUPPORTED;
+}
+static NTSTATUS APIENTRY Query(HANDLE h,const DXGKARG_QUERYADAPTERINFO *q){
+    NTSTATUS status=QueryInfo(h,q);
+#ifdef PI5_EXPERIMENTAL_WDDM20
+    // Entry-only traces hid BUFFER_TOO_SMALL/NOT_SUPPORTED responses. Keep
+    // startup results durable without adding registry writes to UMD queries.
+    if(q&&q->Type!=DXGKQAITYPE_UMDRIVERPRIVATE)
+        return Pi5Trace(166,status,q->Type,q->OutputDataSize);
+#endif
+    return status;
 }
 static NTSTATUS APIENTRY CreateDevice(HANDLE h,DXGKARG_CREATEDEVICE *a){auto d=static_cast<Device*>(Allocate(sizeof(Device)));if(!d)return STATUS_INSUFFICIENT_RESOURCES;d->adapter=static_cast<Adapter*>(h);d->runtime=a->hDevice;a->hDevice=d;return Pi5Trace(30,STATUS_SUCCESS);}
 static NTSTATUS APIENTRY DestroyDevice(HANDLE h){Free(h);return Pi5Trace(31,STATUS_SUCCESS);}
@@ -505,6 +550,9 @@ static NTSTATUS APIENTRY CreateAllocation(HANDLE h,DXGKARG_CREATEALLOCATION *a){
     RtlCopyMemory(&info,out->pPrivateDriverData,sizeof(info));if(!pi5::ValidateAllocation(info))return Pi5Trace(40,STATUS_INVALID_PARAMETER,info.Width,info.Height);
     auto allocation=static_cast<Allocation*>(Allocate(sizeof(Allocation)));if(!allocation)return STATUS_INSUFFICIENT_RESOURCES;allocation->info=info;allocation->adapter=static_cast<Adapter*>(h);allocation->identity=static_cast<ULONGLONG>(InterlockedIncrement64(&allocation->adapter->nextAllocation));
     out->hAllocation=allocation;out->Alignment=PAGE_SIZE;out->Size=info.Bytes;out->PitchAlignedSize=0;out->HintedBank.Value=0;out->PreferredSegment.Value=0;out->PreferredSegment.SegmentId0=1;out->SupportedReadSegmentSet=out->SupportedWriteSegmentSet=1;out->EvictionSegmentSet=0;out->MaximumRenamingListLength=0;out->Flags.Value=0;out->Flags.CpuVisible=!Pi5CpuInvisible(info);out->Flags.Cached=0;out->pAllocationUsageHint=nullptr;out->AllocationPriority=D3DDDI_ALLOCATIONPRIORITY_NORMAL;
+#ifdef PI5_EXPERIMENTAL_WDDM20
+    pi5::SetPhysicalAllocationFlags(*out,!Pi5CpuInvisible(info));
+#endif
     if(a->Flags.Resource&&!a->hResource){a->hResource=Allocate(sizeof(ULONG));if(!a->hResource){Free(allocation);return STATUS_INSUFFICIENT_RESOURCES;}}
     return Pi5Trace(40,STATUS_SUCCESS,info.Bytes,info.BindFlags);
 }
@@ -648,8 +696,33 @@ static NTSTATUS APIENTRY SchedulerEscape(HANDLE h,const DXGKARG_ESCAPE*e){
 #ifdef PI5_FULL_DISPLAY
 #include "display.inc"
 #endif
+#ifdef PI5_EXPERIMENTAL_WDDM20
+struct Process {Adapter* adapter;HANDLE runtime;};
+static NTSTATUS APIENTRY NodeMetadata(HANDLE h,UINT ordinal,DXGKARG_GETNODEMETADATA* out){
+    if(!h)return STATUS_INVALID_PARAMETER;
+    return Pi5Trace(167,pi5::GetPhysicalNodeMetadata(ordinal,out),ordinal);
+}
+static NTSTATUS APIENTRY CreateProcess(HANDLE h,DXGKARG_CREATEPROCESS* args){
+    if(!h||!args)return STATUS_INVALID_PARAMETER;
+    args->hKmdProcess=nullptr;
+    auto process=static_cast<Process*>(Allocate(sizeof(Process)));
+    if(!process)return STATUS_INSUFFICIENT_RESOURCES;
+    process->adapter=static_cast<Adapter*>(h);process->runtime=args->hDxgkProcess;
+    args->hKmdProcess=process;return STATUS_SUCCESS;
+}
+static NTSTATUS APIENTRY DestroyProcess(HANDLE h,HANDLE handle){
+    auto process=static_cast<Process*>(handle);
+    if(!h||!process||process->adapter!=h)return STATUS_INVALID_PARAMETER;
+    Free(process);return STATUS_SUCCESS;
+}
+#endif
 extern "C" NTSTATUS DriverEntry(DRIVER_OBJECT *driver,UNICODE_STRING *registry){
     DRIVER_INITIALIZATION_DATA d={};d.Version=DXGKDDI_INTERFACE_VERSION_WIN8;
+#ifdef PI5_EXPERIMENTAL_WDDM20
+    d.Version=DXGKDDI_INTERFACE_VERSION_WDDM2_0;
+    d.DxgkDdiGetNodeMetadata=NodeMetadata;
+    d.DxgkDdiCreateProcess=CreateProcess;d.DxgkDdiDestroyProcess=DestroyProcess;
+#endif
     d.DxgkDdiAddDevice=Add;d.DxgkDdiStartDevice=Start;d.DxgkDdiStopDevice=Stop;d.DxgkDdiRemoveDevice=Remove;d.DxgkDdiUnload=Unload;d.DxgkDdiResetDevice=ResetDevice;d.DxgkDdiInterruptRoutine=Interrupt;d.DxgkDdiDpcRoutine=Dpc;d.DxgkDdiSetPowerState=Power;d.DxgkDdiQueryAdapterInfo=Query;
     d.DxgkDdiCreateDevice=CreateDevice;d.DxgkDdiDestroyDevice=DestroyDevice;d.DxgkDdiCreateContext=CreateContext;d.DxgkDdiDestroyContext=DestroyContext;
     d.DxgkDdiCreateAllocation=CreateAllocation;d.DxgkDdiDestroyAllocation=DestroyAllocation;d.DxgkDdiOpenAllocation=Open;d.DxgkDdiCloseAllocation=Close;d.DxgkDdiDescribeAllocation=Describe;

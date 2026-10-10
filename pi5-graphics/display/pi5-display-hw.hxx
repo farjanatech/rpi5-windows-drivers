@@ -40,6 +40,9 @@ public:
     // Called with the display interrupt synchronized. Only register writes;
     // all rendering to this linear allocation has already completed.
     NTSTATUS QueueDirectScanout(ULONGLONG offset);
+#ifdef PI5_C1_SCANOUT_PROBE
+    NTSTATUS ProbeC1Scanout(PVOID memory,PHYSICAL_ADDRESS physical,ULONG bytes);
+#endif
     NTSTATUS PrepareScanout(BOOLEAN flip,ULONG *offset);
     using FLIP_COMPLETION=VOID(*)(PVOID,ULONG);
     NTSTATUS CommitScanout(ULONG offset,LONGLONG address,BOOLEAN flip,BOOLEAN noWait,ULONG interval,
@@ -62,6 +65,10 @@ public:
     ULONG BlackoutCount() const {return static_cast<ULONG>(Blackouts);}
     ULONG LastBlackoutReason() const {return BlackoutReason;}
 private:
+#ifdef PI5_C1_SCANOUT_PROBE
+    static BOOLEAN SynchronizeProbe(PVOID context);
+    static BOOLEAN SynchronizeProbeRestore(PVOID context);
+#endif
     static BOOLEAN SynchronizeMask(PVOID context);
     static BOOLEAN SynchronizeFlip(PVOID context);
     static BOOLEAN SynchronizePublish(PVOID context);

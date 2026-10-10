@@ -11,7 +11,7 @@
 #define _BDD_HXX_
 
 // Keep header layouts and registered DDI version identical.
-#define DXGKDDI_INTERFACE_VERSION 0x300E
+#include "../kmd/ddi-version.h"
 #define D3D_UMD_INTERFACE_VERSION 0x3004
 
 extern "C"

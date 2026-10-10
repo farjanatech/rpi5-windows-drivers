@@ -1,0 +1,46 @@
+C1 scanout isolation, diagnostic package 1.0.0.16
+
+Build with -C1ScanoutProbe. This switch is mutually exclusive with
+-ExperimentalWddm20. Production C1 copy presentation and D0 routing remain
+unchanged. This package is a diagnostic, not a fix or a release candidate.
+
+Before activating the package, an administrator must set DWORD
+HKLM\HARDWARE\Pi5GraphicsTrial\C1ScanoutProbe=1 in a VOLATILE key.
+The driver consumes the value once. A reboot or another Start does not repeat
+the trial. Install only with a verified v10 backup and independent timed/startup
+recovery already armed. Do not remove the baseline package.
+
+The test runs before StartDevice returns, before Windows owns the WDDM segment.
+It copies the native startup image into the segment and compares every pixel.
+It then exercises the interrupt-serialized direct queue for approximately four
+seconds from the native DMA allocation, followed by four seconds from the
+physically contiguous graphics segment. There is no new DMA allocation, display
+mode change, or GPU submission. A failed refresh wait ends a stage early.
+Both inactive-list pointers are restored to their respective native buffers
+before normal copy presentation resumes. If restoration fails, startup fails;
+existing Stop semantics retain memory if the HVS cannot relinquish it.
+
+Evidence is retained separately in REG_BINARY
+HKLM\HARDWARE\Pi5DisplayDiagnostics\C1ScanoutProbe.
+Each 16-byte entry contains four little-endian ULONGs: ID, NTSTATUS, A, B.
+260: full pixel comparison result; segment physical address low/high on success
+261: native physical address low/high
+262: native direct queue/refresh status, requested/active HVS list
+263: graphics-segment direct queue/refresh status, requested/active HVS list
+264/265: BAD_UPM/BAD_AXI after the corresponding stage
+266: overall trial status, BAD_UPM/BAD_AXI before the trial
+267: restoration status, requested/active HVS list
+
+Require all eight entries, success statuses, matching requested/active lists,
+unchanged error registers, a healthy PnP adapter, and a hardware rendering test
+afterward. These checks cannot certify the pixels on the physical monitor.
+Visual confirmation is still required. Neither a pass nor a failure licenses
+enabling FlipOnVSyncMmIo for the desktop. A subsequent rendering/presentation
+test must investigate any remaining difference under real workloads.
+
+The live v10 trace on this C1 already shows native DMA scanout above 4 GiB.
+Therefore physical addresses above 4 GiB alone are not an established cause.
+The probe compares allocator/path behavior; it does not assume that cause.
+
+Pointer field reference (upper address bits 7:0, UPM fields above them):
+https://github.com/raspberrypi/linux/blob/rpi-6.12.y/drivers/gpu/drm/vc4/vc4_regs.h

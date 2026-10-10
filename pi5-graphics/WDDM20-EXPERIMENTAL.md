@@ -1,0 +1,112 @@
+# Experimental WDDM 2.0 physical-address driver
+
+This candidate targets the missing Task Manager GPU performance graph. Windows
+requires WDDM 2.0 or newer for its VidSch/VidMm GPU performance reporting.
+It is a hardware-test candidate, not a validated production driver.
+
+Build with `build.ps1 -Driver pi5-graphics -ExperimentalWddm20`. Only this explicit
+option enables the new DDIs and changes the staged INF to **1.0.0.15**. Normal
+builds use the **WDDM 1.2 / 1.0.0.12** diagnostic control. Both packages add
+read-only POST-list traces 126/127 for the position and alpha words. Display
+validation and rendering behavior remain unchanged from v10.
+
+**C1 activation is blocked.** Read-only inspection of the installed ARM64
+`dxgkrnl.sys` 10.0.22621.4249, using its matching Microsoft public symbols,
+found an explicit `ADAPTER_RENDER::CreateRenderCore` rejection of WDDM 2.x
+graphics drivers without `FlipOnVSyncMmIo`. The C1 branch deliberately keeps
+that capability off because direct segment scanout previously corrupted the
+display. This is a concrete incompatibility with the current candidate; the
+last query (47, an optional 64-bit-only-driver query) is not itself fatal.
+Do not advertise MMIO flips while `SourceAddress` still uses the passive-level
+copy path: the OS can then call it at interrupt level.
+
+Run `Assert-Wddm20Hardware.ps1` before staging or activating the experimental
+package. It rejects C1 and unknown revisions. D0 passing the gate is not
+hardware qualification. The next C1 requirement is a correct, validated
+interrupt-safe scanout path, not another capability-only installation.
+
+V15 also selects the Windows 8+ preemption policy for the existing DMA-boundary
+preemption implementation. Startup query results (trace 166) and node metadata
+results (167) are flushed immediately, without per-frame registry writes.
+`Capture-StartupTrace.ps1` selects diagnostic/driver/Azure-triage keywords and
+uses a bounded sequential trace to retain the beginning of startup. Its
+installer must still arm independent recovery. These diagnostics and the
+preemption correction do not resolve the C1 scanout incompatibility.
+
+The v10 device reported Code 43 after a reboot, with FindPostPort returning
+STATUS_DEVICE_CONFIGURATION_ERROR before display hardware startup. The old
+trace omitted two C1 predicates. Capture those words with ControlGraphics v12
+before activating the WDDM 2.0 candidate; do not relax checks from incomplete
+diagnostics or describe v10 as a consistently healthy post-reboot baseline.
+
+Hardware observation on 2026-10-10: v10 started successfully after a subsequent
+reboot and passed the 120-frame hardware shader/readback test. Candidate v13
+completed display startup but Windows stopped it after adapter-capability
+queries; it was removed and v10 passed the same test after restoration. V14
+adds the missing physical-adapter response, including the 20-byte WDDM 2.0
+output size actually requested by Windows. V14 also failed device startup with
+Code 43: the physical-adapter query succeeded, but Windows stopped the adapter
+before QUERYSEGMENT4. Neither candidate enabled the Task Manager GPU graph.
+
+Both candidates were removed. During the last live reload, v10 failed its display
+common-buffer allocation with STATUS_INSUFFICIENT_RESOURCES. It recovered after
+a subsequent unclean reboot and again passed all 120 hardware shader/readback
+checks, with no PnP problem. The recovery task completed and removed itself.
+This establishes rendering after that boot, not long-term stability or the cause
+of the reboot. Windows recorded no usable bugcheck code or crash dump.
+
+The all-keyword circular DxgKrnl trace was overwhelmed by per-frame events and
+did not retain the candidate's startup interval. A future diagnostic capture
+must select startup/diagnostic keywords and verify the retained time range;
+absence of an error in that trace does not explain the startup rejection.
+Keep this change as a draft until initialization and the gates below pass.
+
+The candidate registers the WDDM 2.0 interface, reports one physical-address
+V3D 3D node and its physical-adapter capabilities, enumerates the existing CPU-visible reserved memory through
+QUERYSEGMENT4, marks allocations AccessedPhysically and provides process object
+lifetime callbacks. Two-stage segment enumeration never reads undefined fields
+in the count query and respects the OS-supplied descriptor stride. Submission,
+patching, real completion fences, preemption, global timeout recovery, UMD,
+shader encoding and C1/D0 display paths remain the v10 implementation.
+
+GPUVA, IOMMU, hardware scheduling, virtual display modes, overlays, video
+engines, and precise GPU timestamp/history-buffer instrumentation are not
+advertised. In particular, CPU timers are not reported as GPU clock samples.
+Task Manager's eventual utilization measures scheduler occupancy, which includes
+this driver's serialized software preparation and presentation work; it is not
+a V3D shader-busy hardware counter.
+
+## Validation gates
+
+CI builds both configurations with warnings as errors, exercises the actual
+segment/metadata/allocation helpers with malformed and guard-buffer inputs, and
+runs the existing C1/D0 encoder and shader regressions. It also builds a separate
+ARM64 hardware probe. CI does not run the probe on a software adapter.
+
+Before hardware activation, resolve the existing WDDM 1.2 startup failure,
+retain and export the exact signed baseline package, and establish a timed recovery action restoring it
+and record event-log bookmarks. Do not change firmware, boot security, TDR
+timeouts or provider drivers for this experiment.
+
+After activation, all of these must pass before retaining the candidate:
+
+1. ACPI\RPI1001\0 uses the experimental version without a PnP problem; dxdiag reports WDDM 2.0 and
+   Pi5D3D rather than Microsoft Basic Render Driver.
+2. `hardware-3d-smoke.exe` passes on the explicit Pi5 V3D adapter. It verifies
+   120 shader-drawn triangles, background clears and synchronized pixel readbacks.
+3. GPU Engine/GPU Adapter Memory counters enumerate the Pi adapter, change
+   under work, and Task Manager shows its GPU graph.
+4. Render fences continue progressing without new DWM crashes, display resets,
+   scheduler faults or black screens during the user's previous reproducer.
+
+A failed gate means restore the verified baseline; do not interpret a version string alone as
+success. Multi-process, memory-pressure/paging, sleep/resume, display changes
+and timeout recovery still require broader hardware qualification before merge.
+
+## References
+
+- [Microsoft: GPUs in Task Manager](https://devblogs.microsoft.com/directx/gpus-in-the-task-manager/)
+- [Physical and virtual engines in WDDM 2.0](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/gpu-virtual-memory-in-wddm-2-0)
+- [GPU segments and physical allocation requirements](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/gpu-segments)
+- [QUERYSEGMENTOUT4 two-stage contract](https://learn.microsoft.com/en-us/windows-hardware/drivers/ddi/d3dkmddi/ns-d3dkmddi-_dxgk_querysegmentout4)
+- [Optional precise GPU timing](https://learn.microsoft.com/en-us/windows-hardware/drivers/display/graphics-kernel-performance-improvements)
