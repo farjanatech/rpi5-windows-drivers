@@ -201,7 +201,15 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
         for(unsigned i=0;i<nops;++i)if(code[at++]!=Nop)return false;
     }
     if(stage==ProgramStage::Pixel&&varyings!=varyingScalars)return false;
-    if(!targetRead&&(words-at<3||code[at++]!=Switch||code[at++]!=Switch||code[at++]!=Nop))return false;
+    // A V3D 4.x vertex shader that starts in the final thread section has no
+    // "last THRSW" pair. Its only remaining switch is THREND followed by two
+    // delay-slot instructions. Admit this form only when the validated code
+    // actually uses RF32-RF63 and performs no TMU lookup; KMD uses the exact
+    // same conditions to set the shader-state final-section bit.
+    const bool finalSectionVertex=stage==ProgramStage::Vertex&&!samples&&
+        (defined&UINT64_C(0xffffffff00000000))&&words-at==3&&
+        code[at]==Switch&&code[at+1]==Nop&&code[at+2]==Nop;
+    if(!targetRead&&!finalSectionVertex&&(words-at<3||code[at++]!=Switch||code[at++]!=Switch||code[at++]!=Nop))return false;
     if(stage==ProgramStage::Pixel){
         for(unsigned i=0;i<outputs;++i){if(at>=words)return false;uint64_t word=code[at++];unsigned reg=unsigned(word&63);if(!Defined(defined,reg)||word!=Add(182,i?7:8,reg,reg,true))return false;}
     }else{
@@ -209,7 +217,9 @@ bool ValidateProgram(const uint64_t *code,uint32_t words,const uint32_t *uniform
         if(written!=(UINT64_C(1)<<outputs)-1)return false;
     }
     if(stage==ProgramStage::Pixel){if(used>=uniformCount||CheckedUniform(used++)!=0xffffff3fu)return false;}
-    bool valid=!(bindingsUsed&~bindingsDeclared)&&bool(constantSamples)==rules.constants&&used==uniformCount&&words-at==4&&code[at]==Nop&&code[at+1]==Switch&&code[at+2]==Nop&&code[at+3]==Nop;
+    bool tail=finalSectionVertex?words-at==3&&code[at]==Switch&&code[at+1]==Nop&&code[at+2]==Nop:
+        words-at==4&&code[at]==Nop&&code[at+1]==Switch&&code[at+2]==Nop&&code[at+3]==Nop;
+    bool valid=!(bindingsUsed&~bindingsDeclared)&&bool(constantSamples)==rules.constants&&used==uniformCount&&tail;
     if(valid&&registers)*registers=defined;if(valid&&usedBindings)*usedBindings=bindingsUsed;
     return valid;
 }
