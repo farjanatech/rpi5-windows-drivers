@@ -8,7 +8,7 @@ static const ULONG Sizes[]={0x1a000,0x100,0x100,0x30,0x300,0x80,0x300,0x300,0x10
 static const ULONG Clocks[]={4,16,13,14};
 // GOP does not identify a connector. Match its framebuffer against the live
 // firmware raster lists instead of assuming HDMI0 owns the POST display.
-NTSTATUS PI5_DISPLAY_HW::FindPostPort(const DXGK_DEVICE_INFO *device,const DXGK_DISPLAY_INFORMATION *display,ULONG *port) {
+NTSTATUS PI5_DISPLAY_HW::FindPostPort(const DXGK_DEVICE_INFO *device,const DXGK_DISPLAY_INFORMATION *display,ULONG *port,ULONG revision) {
     PAGED_CODE();
     if(!device||!display||!port||!device->TranslatedResourceList)return STATUS_INVALID_PARAMETER;
     if(display->PhysicAddress.HighPart)return STATUS_NOT_SUPPORTED;
@@ -22,21 +22,85 @@ NTSTATUS PI5_DISPLAY_HW::FindPostPort(const DXGK_DEVICE_INFO *device,const DXGK_
             if(!hvs)return STATUS_INSUFFICIENT_RESOURCES;
             auto read=[hvs](ULONG offset){return READ_REGISTER_ULONG(reinterpret_cast<PULONG>(hvs+offset));};
             NTSTATUS status=STATUS_DEVICE_CONFIGURATION_ERROR;
-            if(read(0)==0x2454)for(ULONG candidate=0;candidate<2;++candidate){
-                ULONG head=read(0x110+candidate*0x40)&0xfff;
-                if(head>=0x800 || (read(0x11c+candidate*0x40)&0xfff)!=head)continue;
-                ULONG base=0x4000+head*4;
-                if(read(base)!=0x600cc007 || (read(base+20)&15)!=0 || read(base+24)!=display->PhysicAddress.LowPart ||
-                   read(base+28)!=display->Pitch || read(base+12)!=((display->Height-1)<<16 | (display->Width-1)))continue;
-                *port=candidate;status=STATUS_SUCCESS;break;
+            ULONG version=read(0);
+            BddTrace(116,STATUS_SUCCESS,revision,display->PhysicAddress.LowPart);
+            BddTrace(125,STATUS_SUCCESS,version,version&0xff);
+            const BOOLEAN c1=revision==0;
+            const BOOLEAN d0=revision==1;
+            const BOOLEAN recognized=(d0&&version==0x2454) || (c1&&((version&0xff)==0x53));
+            if(recognized)for(ULONG candidate=0;candidate<2;++candidate){
+                // BCM2712 C0/C1 and D0 place the per-display register blocks
+                // at different offsets. These values come from Raspberry Pi's
+                // upstream vc4 SCALER6/SCALER6D register definitions.
+                ULONG headOffset=c1?(0x3c+candidate*0x20):(0x110+candidate*0x40);
+                ULONG activeOffset=c1?(0x48+candidate*0x20):(0x11c+candidate*0x40);
+                ULONG head=read(headOffset)&0xfff;
+                ULONG active=read(activeOffset)&0xfff;
+                BddTrace(117+candidate*4,STATUS_SUCCESS,head,active);
+                if(head<0x800){
+                    ULONG base=0x4000+head*4;
+                    BddTrace(118+candidate*4,STATUS_SUCCESS,read(base),read(base+12));
+                    BddTrace(119+candidate*4,STATUS_SUCCESS,read(base+20),read(base+24));
+                    BddTrace(120+candidate*4,STATUS_SUCCESS,read(base+28),display->Pitch);
+                }
+                // D0 remains Damian's original strict path.
+                if(d0){
+                    if(head>=0x800 || active!=head)continue;
+                    ULONG base=0x4000+head*4;
+                    if(read(base)!=0x600cc007 || (read(base+20)&15)!=0 || read(base+24)!=display->PhysicAddress.LowPart ||
+                       read(base+28)!=display->Pitch || read(base+12)!=((display->Height-1)<<16 | (display->Width-1)))continue;
+                    *port=candidate;status=STATUS_SUCCESS;break;
+                }
+                if(c1){
+                    if(head>=0x800 || active!=head)continue;
+                    ULONG base=0x4000+head*4;
+                    // C1 hardware capture 2026-10-07 plus Raspberry Pi's
+                    // VC4_GEN_6_C definitions: fixed alpha is in CTL2, not
+                    // D0's CTL0 alpha-mask bits.
+                    if(read(base)!=0x6000c007 || read(base+4)!=0 ||
+                       read(base+8)!=0x4000fff0 ||
+                       (read(base+20)&15)!=0 ||
+                       read(base+24)!=display->PhysicAddress.LowPart ||
+                       read(base+28)!=display->Pitch ||
+                       read(base+12)!=((display->Height-1)<<16 | (display->Width-1)))continue;
+                    *port=candidate;status=STATUS_SUCCESS;break;
+                }
             }
             MmUnmapIoSpace(hvs,Sizes[0]);return BddTrace(115,status,status==STATUS_SUCCESS?*port:MAXULONG,display->PhysicAddress.LowPart);
         }
     }
     return STATUS_DEVICE_CONFIGURATION_ERROR;
 }
+static ULONG HvsPhysicalOffset(ULONG logical,ULONG port,ULONG revision)
+{
+    // Callers use Damian's D0 register names as the canonical layout.
+    // Offsets 0x100..0x120 mean "current display"; larger 0x140/0x180
+    // references already identify a particular HVS channel.
+    if(logical>=0x100&&logical<=0x120)logical+=port*0x40;
+    if(revision!=0)return logical;
+
+    if(logical>=0x100&&logical<=0x1a0){
+        ULONG channel=(logical-0x100)/0x40;
+        ULONG field=(logical-0x100)%0x40;
+        ULONG mapped;
+        switch(field){
+        case 0x00:mapped=0x00;break; // CTRL0
+        case 0x04:mapped=0x04;break; // CTRL1
+        case 0x08:mapped=0x08;break; // BGND0 -> BGND
+        case 0x0c:mapped=0x08;break; // D0 BGND1 has no C1 peer
+        case 0x10:mapped=0x0c;break; // LPTRS
+        case 0x14:mapped=0x10;break; // COB
+        case 0x18:mapped=0x14;break; // STATUS
+        case 0x1c:mapped=0x18;break; // DL
+        case 0x20:mapped=0x1c;break; // RUN
+        default:return logical;
+        }
+        return 0x30+channel*0x20+mapped;
+    }
+    return logical;
+}
 ULONG PI5_DISPLAY_HW::Read(ULONG unit,ULONG offset) const {
-    if(unit==0&&offset>=0x100&&offset<=0x120)offset+=Port*0x40;
+    if(unit==0)offset=HvsPhysicalOffset(offset,Port,SiliconRevision);
     return READ_REGISTER_ULONG(reinterpret_cast<PULONG>(Reg[unit]+offset));
 }
 VOID PI5_DISPLAY_HW::Write(ULONG unit,ULONG offset,ULONG value) {
@@ -47,7 +111,7 @@ VOID PI5_DISPLAY_HW::Write(ULONG unit,ULONG offset,ULONG value) {
         if(unit==region&&offset==off)permitted=true;
     }
     NT_ASSERT(permitted);if(!permitted)return;
-    if(unit==0&&offset>=0x100&&offset<=0x120)offset+=Port*0x40;
+    if(unit==0)offset=HvsPhysicalOffset(offset,Port,SiliconRevision);
     WRITE_REGISTER_ULONG(reinterpret_cast<PULONG>(Reg[unit]+offset),value);
 }
 NTSTATUS PI5_DISPLAY_HW::SecondaryMode(DXGK_DISPLAY_INFORMATION *display) const {
@@ -87,10 +151,10 @@ BOOLEAN PI5_DISPLAY_HW::WaitHead(ULONG head) {
     return FALSE;
 }
 NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTERFACE *dxgk,
-                              const DXGK_DISPLAY_INFORMATION *display,ULONG port,BOOLEAN ownsPost) {
+                              const DXGK_DISPLAY_INFORMATION *display,ULONG port,BOOLEAN ownsPost,ULONG revision) {
     PAGED_CODE();
-    if(port>1||(!FullDisplay&&port))return STATUS_INVALID_PARAMETER;
-    Port=port;PostOwner=ownsPost;Dxgk=dxgk;Width=display->Width;Height=display->Height;Pitch=display->Pitch;OwnHead=0xf80+Port*0x20;
+    if(port>1||revision>1||(!FullDisplay&&port))return STATUS_INVALID_PARAMETER;
+    Port=port;SiliconRevision=revision;PostOwner=ownsPost;Dxgk=dxgk;Width=display->Width;Height=display->Height;Pitch=display->Pitch;OwnHead=0xf80+Port*0x20;
     // BCM2712 prefetch storage is shared across HVS outputs. Reserve one half
     // of its 1024 256-byte words per output, with a distinct hardware handle.
     // Two prefetched raster lines fit even at our maximum 4096-pixel width.
@@ -163,46 +227,160 @@ NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTE
         PixelRate=(ULONG)rate;
         BddTrace(32,STATUS_SUCCESS,HTotal,VTotal);BddTrace(33,STATUS_SUCCESS,PixelRate,Read(5,0x1c));
     }
-    if(Read(0,0)!=0x2454 || Read(0,4)!=4096 || Read(0,0x0c)<1024 ||
-       (((Pitch+62)/32)*64+255)/256>512 || Read(0,0x100)!=(0x80000000u|((Width-1)<<16)|(Height-1)) ||
-       !(Read(1,0)&1) || Read(1,4)!=3 || Read(1,0x24)!=0 ||
-       (Read(1,0x18)&65535)!=Height || Read(0,0x180)!=0)goto Fail;
-    OldHead=Read(0,0x110)&0xfff;
-    if(OldHead>=0x800 || (Read(0,0x11c)&0xfff)!=OldHead || Read(0,0x4000)!=0x80000000)goto Fail;
-    if(!PostOwner&&display->PhysicAddress.QuadPart)goto Fail;
+    const BOOLEAN c1=SiliconRevision==0;
+    const ULONG expectedVersion=c1?0x2453u:0x2454u;
     // Firmware may boot both connected HDMI outputs with independent raster
-    // lists. Validate and retain each list; only the primary is the Windows
-    // POST framebuffer whose physical address is supplied by Dxgkrnl.
-    if(PostOwner||Read(0,0x4000+OldHead*4)==0x600cc007){
-       if(Read(0,0x4000+OldHead*4)!=0x600cc007 || Read(0,0x4004+OldHead*4)!=0 ||
-       Read(0,0x4008+OldHead*4)!=0xfff0 || Read(0,0x400c+OldHead*4)!=((Height-1)<<16 | (Width-1)) ||
-       Read(0,0x401c+OldHead*4)!=Pitch)goto Fail;
-       if(PostOwner&&((Read(0,0x4014+OldHead*4)&15)!=0 || Read(0,0x4018+OldHead*4)!=display->PhysicAddress.LowPart ||
-          display->PhysicAddress.HighPart))goto Fail;
+    // lists. C1 and D0 use the same GEN6 list format, except fixed alpha:
+    // C1: CTL0 no alpha-mask bits, CTL2 fixed-alpha mode bit 30.
+    // D0: fixed-alpha mask in CTL0, CTL2 mode bits clear.
+    const ULONG postCtl0=c1?0x6000c007u:0x600cc007u;
+    const ULONG postCtl2=c1?0x4000fff0u:0x0000fff0u;
+    if(c1){
+        // 0.1.0.169 succeeded through this block while 0.1.0.170 failed here
+        // before any UPM-range code ran. Snapshot each predicate group once
+        // and report the first rejected group without changing D0 behavior.
+        const ULONG version=Read(0,0),cxm=Read(0,4),ubm=Read(0,0x0c);
+        const ULONG upmNeed=(((Pitch+62)/32)*64+255)/256;
+        BOOLEAN ok=version==expectedVersion && cxm==4096 && ubm>=1024 && upmNeed<=512;
+        NTSTATUS diag=ok?STATUS_SUCCESS:STATUS_DEVICE_CONFIGURATION_ERROR;
+        BddTrace(230,diag,version,cxm);
+        BddTrace(231,diag,ubm,upmNeed);
+        if(!ok)goto Fail;
+
+        const ULONG mode=Read(0,0x100),pvCtrl=Read(1,0),pvFormat=Read(1,4);
+        const ULONG pvStatus=Read(1,0x24),pvV=Read(1,0x18),hvsIdle=Read(0,0x180);
+        ok=mode==(0x80000000u|((Width-1)<<16)|(Height-1)) &&
+           (pvCtrl&1) && pvFormat==3 && pvStatus==0 &&
+           (pvV&65535)==Height && hvsIdle==0;
+        diag=ok?STATUS_SUCCESS:STATUS_DEVICE_CONFIGURATION_ERROR;
+        BddTrace(232,diag,mode,pvCtrl);
+        BddTrace(233,diag,pvFormat,pvStatus);
+        BddTrace(234,diag,pvV,hvsIdle);
+        if(!ok)goto Fail;
+
+        const ULONG requested=Read(0,0x110),active=Read(0,0x11c),listZero=Read(0,0x4000);
+        OldHead=requested&0xfff;
+        ok=OldHead<0x800 && (active&0xfff)==OldHead && listZero==0x80000000;
+        diag=ok?STATUS_SUCCESS:STATUS_DEVICE_CONFIGURATION_ERROR;
+        BddTrace(235,diag,requested,active);
+        BddTrace(236,diag,listZero,OwnHead);
+        if(!ok)goto Fail;
+
+        if(!PostOwner&&display->PhysicAddress.QuadPart){
+            BddTrace(237,STATUS_DEVICE_CONFIGURATION_ERROR,display->PhysicAddress.LowPart,display->PhysicAddress.HighPart);
+            goto Fail;
+        }
+
+        const ULONG w0=Read(0,0x4000+OldHead*4),w1=Read(0,0x4004+OldHead*4);
+        const ULONG w2=Read(0,0x4008+OldHead*4),w3=Read(0,0x400c+OldHead*4);
+        const ULONG w5=Read(0,0x4014+OldHead*4),w6=Read(0,0x4018+OldHead*4),w7=Read(0,0x401c+OldHead*4);
+        ok=!PostOwner&&w0!=postCtl0;
+        if(PostOwner||w0==postCtl0){
+            ok=w0==postCtl0 && w1==0 && w2==postCtl2 &&
+               w3==((Height-1)<<16 | (Width-1)) && w7==Pitch;
+            if(ok&&PostOwner)ok=(w5&15)==0 && w6==display->PhysicAddress.LowPart &&
+                                 display->PhysicAddress.HighPart==0;
+        }
+        diag=ok?STATUS_SUCCESS:STATUS_DEVICE_CONFIGURATION_ERROR;
+        BddTrace(237,diag,w0,w1);
+        BddTrace(238,diag,w2,w3);
+        BddTrace(239,diag,w5,w6);
+        BddTrace(240,diag,w7,display->PhysicAddress.HighPart);
+        if(!ok)goto Fail;
+
+        // Validate that the firmware list walk never enters our reserved tail.
+        for(ULONG p=OldHead,n=0;;){
+            if(p>=0x800 || ++n>64){BddTrace(241,STATUS_DEVICE_CONFIGURATION_ERROR,p,n);goto Fail;}
+            ULONG w=Read(0,0x4000+p*4);
+            if(w==0x80000000){PostListWords=p-OldHead+1;BddTrace(241,STATUS_SUCCESS,p,PostListWords);break;}
+            if(w!=0x20000000&&!(p==OldHead&&w==postCtl0)){BddTrace(241,STATUS_DEVICE_CONFIGURATION_ERROR,p,w);goto Fail;}
+            p+=32;
+        }
+        const ULONG tailWords=10*FramebufferCount();
+        // The active firmware list was just proven to terminate below 0x800,
+        // while our private C1 tail starts at 0xF80. Do not require firmware
+        // scratch contents to retain Damian's historical 0xB0 sentinel across
+        // repeated driver install/rollback cycles. Save and restore exactly
+        // what is present instead; only bounds/overlap are ownership facts.
+        if(OwnHead<0x800 || OwnHead+tailWords>cxm){BddTrace(242,STATUS_DEVICE_CONFIGURATION_ERROR,OwnHead,tailWords);goto Fail;}
+        ULONG nonSentinel=0,firstNonSentinel=MAXULONG;
+        for(ULONG i=0;i<tailWords;++i){
+            SavedList[i]=Read(0,0x4000+(OwnHead+i)*4);
+            if(SavedList[i]!=0xb0b0b0b0){if(firstNonSentinel==MAXULONG)firstNonSentinel=i;++nonSentinel;}
+        }
+        BddTrace(242,STATUS_SUCCESS,nonSentinel,firstNonSentinel);
+    }else{
+        // Preserve Damian's D0 validation path exactly.
+        if(Read(0,0)!=expectedVersion || Read(0,4)!=4096 || Read(0,0x0c)<1024 ||
+           (((Pitch+62)/32)*64+255)/256>512 || Read(0,0x100)!=(0x80000000u|((Width-1)<<16)|(Height-1)) ||
+           !(Read(1,0)&1) || Read(1,4)!=3 || Read(1,0x24)!=0 ||
+           (Read(1,0x18)&65535)!=Height || Read(0,0x180)!=0)goto Fail;
+        OldHead=Read(0,0x110)&0xfff;
+        if(OldHead>=0x800 || (Read(0,0x11c)&0xfff)!=OldHead || Read(0,0x4000)!=0x80000000)goto Fail;
+        if(!PostOwner&&display->PhysicAddress.QuadPart)goto Fail;
+        if(PostOwner||Read(0,0x4000+OldHead*4)==postCtl0){
+           if(Read(0,0x4000+OldHead*4)!=postCtl0 || Read(0,0x4004+OldHead*4)!=0 ||
+           Read(0,0x4008+OldHead*4)!=postCtl2 || Read(0,0x400c+OldHead*4)!=((Height-1)<<16 | (Width-1)) ||
+           Read(0,0x401c+OldHead*4)!=Pitch)goto Fail;
+           if(PostOwner&&((Read(0,0x4014+OldHead*4)&15)!=0 || Read(0,0x4018+OldHead*4)!=display->PhysicAddress.LowPart ||
+              display->PhysicAddress.HighPart))goto Fail;
+        }
+        // Validate that the firmware list walk never enters our reserved tail.
+        for(ULONG p=OldHead,n=0;;){
+            if(p>=0x800 || ++n>64)goto Fail;
+            ULONG w=Read(0,0x4000+p*4);
+            if(w==0x80000000){PostListWords=p-OldHead+1;break;}
+            if(w!=0x20000000&&!(p==OldHead&&w==postCtl0))goto Fail;
+            p+=32;
+        }
+        for(ULONG i=0;i<10*FramebufferCount();++i){SavedList[i]=Read(0,0x4000+(OwnHead+i)*4);if(SavedList[i]!=0xb0b0b0b0)goto Fail;}
     }
-    // Validate that the firmware list walk never enters our reserved tail.
-    for(ULONG p=OldHead,n=0;;){
-        if(p>=0x800 || ++n>64)goto Fail;
-        ULONG w=Read(0,0x4000+p*4);
-        if(w==0x80000000){PostListWords=p-OldHead+1;break;}
-        if(w!=0x20000000&&!(p==OldHead&&w==0x600cc007))goto Fail;
-        p+=32;
-    }
-    for(ULONG i=0;i<10*FramebufferCount();++i){SavedList[i]=Read(0,0x4000+(OwnHead+i)*4);if(SavedList[i]!=0xb0b0b0b0)goto Fail;}
     for(ULONG i=0;i<PostListWords;++i)PostList[i]=Read(0,0x4000+(OldHead+i)*4);
-    s=OpenMonitor();if(s!=STATUS_SUCCESS)goto Fail;
+    if(c1)BddTrace(222,STATUS_SUCCESS,OldHead,PostListWords);
+    s=OpenMonitor();
+    if(c1)BddTrace(223,s,Port,Monitor.Count);
+    if(s!=STATUS_SUCCESS)goto Fail;
     SaveNative(&OriginalNative);
+    if(c1)BddTrace(224,STATUS_SUCCESS,NativeMaxClock,Monitor.Bytes);
     // GOP permits row padding. Keep the exact POST layout for handback, while
     // the native scanout allocations use the packed pitch required by DWM.
     // A new UPM handle retires firmware's cached raster geometry.
     if(PostOwner){
         ULONG postPointer=Read(0,0x4014+OldHead*4);
-        ULONG postBase=(postPointer>>16)&1023,postHandle=(postPointer>>10)&31;
+        ULONG postBase=(postPointer>>16)&1023u,postHandle=(postPointer>>10)&31u;
         ULONG handle=postHandle;
         ULONG targetBase=Port?512u:0u;
-        if(Pitch!=Width*4 || postBase!=targetBase)handle=(handle+2)&31;
-        if(handle==(Port?0u:1u))handle=(handle+2)&31;
+        if(c1){
+            // VC6 PTR0 names both a UPM handle and a UPM memory range.
+            // 0.1.0.169 proved that changing only the handle is insufficient
+            // on C1: the physical output remained corrupted while BAD_UPM and
+            // BAD_AXI stayed clear. Mirror upstream VC6 sizing and move the
+            // Windows prefetch buffer completely past the firmware allocation.
+            const ULONG postBufferLines=2u<<((postPointer>>8)&3u);
+            const ULONG windowsPitch=Width*4u;
+            const ULONG postWordsPerLine=(Pitch+62u)/32u;
+            const ULONG windowsWordsPerLine=(windowsPitch+62u)/32u;
+            const ULONG postUpmWords=(postWordsPerLine*32u*postBufferLines+255u)/256u;
+            const ULONG windowsUpmWords=(windowsWordsPerLine*32u*2u+255u)/256u;
+            const ULONG partitionBase=Port?512u:0u;
+            const ULONG partitionLimit=partitionBase+512u;
+            const ULONG ubmWords=Read(0,0x0c);
+            if(postBase<partitionBase || postBase>=partitionLimit ||
+               !postUpmWords || !windowsUpmWords)goto Fail;
+            targetBase=postBase+postUpmWords;
+            if(targetBase<postBase || targetBase>0x1fffu ||
+               targetBase+windowsUpmWords>partitionLimit ||
+               targetBase+windowsUpmWords>ubmWords)goto Fail;
+            handle=(postHandle+2)&31u;
+            BddTrace(227,STATUS_SUCCESS,postBase,targetBase);
+            BddTrace(228,STATUS_SUCCESS,postUpmWords,windowsUpmWords);
+            BddTrace(229,STATUS_SUCCESS,ubmWords,partitionLimit);
+        }else{
+            if(Pitch!=Width*4 || postBase!=targetBase)handle=(handle+2)&31;
+            if(handle==(Port?0u:1u))handle=(handle+2)&31;
+        }
         UpmDescriptor=(targetBase<<16)|(handle<<10);
+        if(c1)BddTrace(219,STATUS_SUCCESS,postPointer,UpmDescriptor);
         Pitch=Width*4;
     }
     {
@@ -225,6 +403,30 @@ NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTE
         if(!Buffer)goto Fail;
         s=STATUS_DEVICE_CONFIGURATION_ERROR;
         if(((ULONG_PTR)Buffer&4095) || (Dma.QuadPart&4095) || (ULONGLONG)Dma.QuadPart+BufferBytes>0xa00000000ull)goto Fail;
+        if(c1){
+            // The HVS has no IOMMU. Damian's direct-scanout path therefore
+            // requires the HAL common-buffer DMA address to equal the buffer's
+            // CPU physical address. C1 copy-scanout never checked this.
+            // Measure every scanout page before changing any addressing.
+            PUCHAR cpu=reinterpret_cast<PUCHAR>(const_cast<ULONG*>(Buffer))+4096;
+            const ULONG pages=ScanoutBytes()/4096;
+            const ULONGLONG logical=(ULONGLONG)Dma.QuadPart+4096;
+            const PHYSICAL_ADDRESS first=MmGetPhysicalAddress(cpu);
+            const PHYSICAL_ADDRESS last=MmGetPhysicalAddress(cpu+SIZE_T(pages-1)*4096);
+            ULONG mismatches=0,firstMismatch=MAXULONG;
+            for(ULONG i=0;i<pages;++i){
+                const PHYSICAL_ADDRESS page=MmGetPhysicalAddress(cpu+SIZE_T(i)*4096);
+                if((ULONGLONG)page.QuadPart!=(ULONGLONG)first.QuadPart+ULONGLONG(i)*4096){
+                    if(firstMismatch==MAXULONG)firstMismatch=i;
+                    ++mismatches;
+                }
+            }
+            BddTrace(243,STATUS_SUCCESS,(ULONG)logical,(ULONG)(logical>>32));
+            BddTrace(244,STATUS_SUCCESS,first.LowPart,(ULONG)((ULONGLONG)first.QuadPart>>32));
+            BddTrace(245,STATUS_SUCCESS,last.LowPart,(ULONG)((ULONGLONG)last.QuadPart>>32));
+            BddTrace(246,STATUS_SUCCESS,mismatches,firstMismatch);
+            BddTrace(247,STATUS_SUCCESS,pages,logical==(ULONGLONG)first.QuadPart?1u:0u);
+        }
         for(ULONG i=0;i<BufferBytes/4;++i)Buffer[i]=0x50494744;
         if(PostOwner){PostBuffer=static_cast<volatile ULONG*>(MmMapIoSpaceEx(display->PhysicAddress,OriginalDisplay.Pitch*Height,PAGE_READWRITE|PAGE_WRITECOMBINE));
             s=STATUS_INSUFFICIENT_RESOURCES;if(!PostBuffer)goto Fail;}
@@ -238,12 +440,28 @@ NTSTATUS PI5_DISPLAY_HW::Start(const DXGK_DEVICE_INFO *device,const DXGKRNL_INTE
     {
         for(ULONG frame=0;frame<FramebufferCount();++frame){
             PHYSICAL_ADDRESS address=Dma;address.QuadPart+=4096+SIZE_T(frame)*FrameBytes;
-            ULONG own[10]={0x490cc007,0,0xfff0,((Height-1)<<16)|(Width-1),0xc0c0c0c0,UpmDescriptor|(ULONG)address.HighPart,
-                           address.LowPart,Pitch,0x80000000,0x80000000};
+            ULONG own[10]={c1?0x4900c007u:0x490cc007u,0,c1?0x4000fff0u:0x0000fff0u,
+                           ((Height-1)<<16)|(Width-1),0xc0c0c0c0u,
+                           UpmDescriptor|(ULONG)address.HighPart,address.LowPart,Pitch,0x80000000,0x80000000};
             for(ULONG i=0;i<10;++i)Write(0,0x4000+(OwnHead+frame*10+i)*4,own[i]);
         }
         KeMemoryBarrier();InterlockedExchange(&Owned,1);Write(0,0x110,OwnHead);
         if(!WaitHead(OwnHead)){s=STATUS_IO_TIMEOUT;goto Fail;}
+        if(c1){
+            // Release-build C1 scanout telemetry. Keep this read-only: it is
+            // specifically for comparing the Windows private list against the
+            // user's known-good firmware C1 handoff.
+            BddTrace(210,STATUS_SUCCESS,Read(0,0x110),Read(0,0x11c));
+            BddTrace(211,STATUS_SUCCESS,Read(0,0x24),Read(0,0x28));
+            BddTrace(212,STATUS_SUCCESS,Read(0,0x2c),Read(0,0x22c));
+            BddTrace(213,STATUS_SUCCESS,Read(0,0x230),UpmDescriptor);
+            BddTrace(220,STATUS_SUCCESS,Read(0,0x200),Read(0,0x204));
+            BddTrace(221,STATUS_SUCCESS,Read(0,0x208),Read(0,0x0c));
+            for(ULONG i=0;i<10;i+=2)
+                BddTrace(214+i/2,STATUS_SUCCESS,
+                    Read(0,0x4000+OwnHead*4+i*4),
+                    Read(0,0x4000+OwnHead*4+(i+1)*4));
+        }
     }
     BddTrace(20,STATUS_SUCCESS,OldHead,OwnHead);
     return STATUS_SUCCESS;
@@ -312,8 +530,11 @@ NTSTATUS PI5_DISPLAY_HW::OpenMonitor(){
     InitializeObjectAttributes(&a,&name,OBJ_KERNEL_HANDLE|OBJ_CASE_INSENSITIVE,nullptr,nullptr);
     NTSTATUS s=ZwCreateFile(&MailboxHandle,GENERIC_READ|SYNCHRONIZE,&a,&io,nullptr,0,
         FILE_SHARE_READ|FILE_SHARE_WRITE,FILE_OPEN,FILE_SYNCHRONOUS_IO_NONALERT|FILE_NON_DIRECTORY_FILE,nullptr,0);
+    if(SiliconRevision==0)BddTrace(225,s,Port,0);
     if(s!=STATUS_SUCCESS)return s;
-    return RefreshMonitor(FALSE);
+    s=RefreshMonitor(FALSE);
+    if(SiliconRevision==0)BddTrace(226,s,Monitor.Bytes,Monitor.Count);
+    return s;
 }
 NTSTATUS PI5_DISPLAY_HW::RefreshMonitor(BOOLEAN requireEdid){
     PAGED_CODE();
@@ -368,7 +589,10 @@ VOID PI5_DISPLAY_HW::WriteCurrentLists(){
     for(ULONG frame=0;frame<FramebufferCount();++frame){
         PHYSICAL_ADDRESS address=Dma;address.QuadPart+=4096+SIZE_T(frame)*FrameBytes;
         if(DirectPixels[frame])address.QuadPart=DirectAddresses[frame];
-        ULONG list[10]={0x490cc007,0,0xfff0,((Height-1)<<16)|(Width-1),0xc0c0c0c0,UpmDescriptor|static_cast<ULONG>(address.HighPart),address.LowPart,Pitch,0x80000000,0x80000000};
+        const BOOLEAN c1=SiliconRevision==0;
+        ULONG list[10]={c1?0x4900c007u:0x490cc007u,0,c1?0x4000fff0u:0x0000fff0u,
+                        ((Height-1)<<16)|(Width-1),0xc0c0c0c0u,
+                        UpmDescriptor|static_cast<ULONG>(address.HighPart),address.LowPart,Pitch,0x80000000,0x80000000};
         for(ULONG i=0;i<10;++i)Write(0,0x4000+(OwnHead+frame*10+i)*4,list[i]);
     }
 }

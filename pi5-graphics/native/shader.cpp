@@ -68,7 +68,7 @@ Operand ReadOperand(Reader &r, bool destination,unsigned depth=0) {
     return o;
 }
 
-enum class Op { Uniform, Add, Sub, Iadd, Isub, Mul, Min, Max, And, Or, Xor, Itof, Utof, Ftoi, Ftou, Ftoin, Reciprocal, Texture,
+enum class Op { Uniform, Add, Sub, Iadd, Isub, Mul, Min, Max, And, Or, Xor, Itof, Utof, Ftoi, Ftou, Ftoin, Reciprocal, Exp, Log, Texture,
                 Shl, Shr, Asr, Imin, Imax, Umin, Umax, Imul, Rsqrt, Round, Trunc, Floor, Ceil, Fdx, Fdy, Feq, Fne, Flt, Fge, Ieq, Ine, Ilt, Ult, Ftz, Fzeq, Fzne, Select };
 struct Node { Op op; uint32_t a, b; Uniform uniform; uint32_t c=Missing; };
 // Sample and Fetch2D write TMUT then TMUS/TMUSF; Fetch1D writes only TMUSF.
@@ -92,7 +92,7 @@ class Compiler {
     const ShaderSignature *linkedVaryings;
     const ConstantBuffers *constants;
     const ShaderBlend *blend;
-    unsigned cseWindow;
+    unsigned cseWindow,registerLimit;
     std::unordered_map<uint64_t,uint32_t> expressions;
     std::vector<Uniform> specialized;
     std::array<uint32_t,Resources> resourceDimensions = {};
@@ -272,7 +272,7 @@ class Compiler {
             for (unsigned reg = 0; reg <= o.index[0]; ++reg)
                 for (unsigned component = 0; component < (reg == o.index[0] ? c : 4); ++component)
                     if (inputMasks[reg] & (1u << component)) ++scalar;
-            Need(scalar < (stage==ShaderStage::Pixel?PI5_MAX_VARYINGS:16u),stage==ShaderStage::Pixel?"varying scalar limit exceeded":"vertex attribute scalar limit exceeded");
+            Need(scalar < (stage==ShaderStage::Pixel?PI5_MAX_VARYINGS:PI5_MAX_VERTEX_SCALARS),stage==ShaderStage::Pixel?"varying scalar limit exceeded":"vertex attribute scalar limit exceeded");
             v = UniformNode(stage==ShaderStage::Pixel?UniformKind::FragmentVarying:UniformKind::VertexAttribute,scalar);
         } else if (o.type == 4) v = Literal(o.value[c]);
         else if (o.type == 8) {
@@ -456,11 +456,11 @@ class Compiler {
         bool comparison = op == 24 || op == 29 || op == 49 || op == 57 || (op >= 32 && op <= 34) || op == 39 || op == 79 || op == 80;
         bool integer = op == 30 || op == 35 || op == 36 || op == 37 || op == 40 || op == 41 || op == 42 || op == 59 || (op >= 82 && op <= 85) ||
                        (op >= 32 && op <= 34) || op == 39 || op == 79 || op == 80;
-        bool unary = op == 54 || op == 27 || op == 28 || op == 40 || op == 43 || op == 86 || op == 59 || op == 26 || (op >= 64 && op <= 68) || op == 11 || op == 12;
+        bool unary = op == 54 || op == 27 || op == 28 || op == 40 || op == 43 || op == 86 || op == 59 || op == 26 || op == 25 || op == 47 || (op >= 64 && op <= 68) || op == 75 || op == 11 || op == 12;
         unsigned count = unary ? 1 : op == 50 || op == 35 || op == 82 ? 3 : 2;
         Need(op == 0 || op == 1 || (op >= 15 && op <= 17) || op == 50 || op == 51 ||
              op == 14 || op == 30 || op == 40 || op == 52 || op == 54 || op == 56 || op == 60 || op == 87 || op == 27 || op == 28 || op == 43 || op == 86 ||
-             integer || comparison || op == 26 || (op >= 64 && op <= 68) || ((op == 11 || op == 12) && stage == ShaderStage::Pixel),"unsupported DXBC opcode");
+             integer || comparison || op == 26 || op == 25 || op == 47 || (op >= 64 && op <= 68) || op == 75 || ((op == 11 || op == 12) && stage == ShaderStage::Pixel),"unsupported DXBC opcode");
         Need(!(token & 0x00ffd800u),"unsupported instruction controls");
         Need((!integer && !comparison) || !(token & 0x2000),"integer arithmetic cannot saturate");
         Operand d = ReadOperand(r,true), sources[3];
@@ -493,6 +493,9 @@ class Compiler {
                 case 66: result[c] = Binary(Op::Ceil,a,a); break;
                 case 67: result[c] = Binary(Op::Trunc,a,a); break;
                 case 68: result[c] = Binary(Op::Rsqrt,a,a); break;
+                case 25: result[c] = Binary(Op::Exp,a,a); break;
+                case 47: result[c] = Binary(Op::Log,a,a); break;
+                case 75: {uint32_t rsq=Binary(Op::Rsqrt,a,a);result[c]=Binary(Op::Reciprocal,rsq,rsq);break;}
                 case 11: result[c] = Binary(Op::Fdx,a,a); break;
                 case 12: result[c] = Binary(Op::Fdy,a,a); break;
                 case 35: case 82: result[c] = Binary(Op::Iadd,Binary(Op::Imul,a,b),Read(sources[2],c,true)); break;
@@ -533,7 +536,11 @@ class Compiler {
                (uint64_t(op) << 24) | (uint64_t(a) << 6) | b;
     }
 public:
-    explicit Compiler(ShaderStage s,const ShaderSignature *link=nullptr,const ConstantBuffers *values=nullptr,const ShaderBlend *blending=nullptr,unsigned cse=64) : stage(s),linkedVaryings(link),constants(values),blend(blending),cseWindow(cse) {for(auto &o:outputs)o.fill(Missing);}
+    explicit Compiler(ShaderStage s,const ShaderSignature *link=nullptr,const ConstantBuffers *values=nullptr,const ShaderBlend *blending=nullptr,unsigned cse=64,unsigned regs=32) :
+        stage(s),linkedVaryings(link),constants(values),blend(blending),cseWindow(cse),registerLimit(regs) {
+        Need(registerLimit==32||registerLimit==64,"invalid physical register limit");
+        for(auto &o:outputs)o.fill(Missing);
+    }
     Shader Run(const uint8_t *data, size_t words) {
         Reader r{data,words};
         Need(r.Take() == (stage == ShaderStage::Pixel ? 0x40u : 0x10040u),"shader stage or model is unsupported");
@@ -664,11 +671,12 @@ Shader Compiler::Emit() {
     for(uint32_t i=0;i<nodes.size();++i)if(live[i]&&nodes[i].op==Op::Texture){const auto&l=lookups[nodes[i].uniform.slot];
         if(l.kind!=Lookup::Constant&&remap[l.binding]==Missing){remap[l.binding]=static_cast<uint32_t>(result.bindings.size());result.bindings.push_back(bindings[l.binding]);}}
     auto Remap=[&](uint32_t binding){Need(binding<remap.size()&&remap[binding]!=Missing,"texel fetch result is unused");return remap[binding];};
-    bool occupied[32] = {};
+    bool occupied[64] = {};
     // Released uniform registers still contain their value until overwritten.
     // Reuse those bits without reserving registers or extending live ranges.
-    uint32_t uniformValue[32];std::fill(std::begin(uniformValue),std::end(uniformValue),Missing);
+    uint32_t uniformValue[64];std::fill(std::begin(uniformValue),std::end(uniformValue),Missing);
     std::vector<bool> sampleEmitted(lookups.size());
+    bool internalThreadSwitch=false;
     // RF3 is the pixel-centre W payload; each LDVARY also writes coefficient C to RF0.
     // Varyings must be read in order, but each is loaded only when first needed
     // and interpolated in its own register, keeping register pressure low.
@@ -682,7 +690,7 @@ Shader Compiler::Emit() {
         if(through>=lastLiveVarying)through=varyingScalars-1;
         unsigned before=loadedVaryings;
         for(;loadedVaryings<=through&&loadedVaryings<varyingScalars;++loadedVaryings){
-            unsigned scalar=loadedVaryings,reg=0;while(reg<32&&occupied[reg])++reg;Need(reg<32,"varying register pressure exceeded");
+            unsigned scalar=loadedVaryings,reg=0;while(reg<registerLimit&&occupied[reg])++reg;Need(reg<registerLimit,"varying register pressure exceeded");
             for(uint32_t i=0;i<nodes.size();++i)if(live[i]&&nodes[i].op==Op::Uniform&&nodes[i].uniform.kind==UniformKind::FragmentVarying&&nodes[i].uniform.value==scalar){occupied[reg]=true;registers[i]=reg;break;}
             uniformValue[reg]=uniformValue[0]=Missing;
             result.code.push_back(UINT64_C(0x39003186bb03f000)|(uint64_t(reg)<<46));
@@ -696,18 +704,33 @@ Shader Compiler::Emit() {
         }
         if(before<varyingScalars&&loadedVaryings==varyingScalars)occupied[0]=occupied[3]=false;
     };
-    auto Ensure=[&](uint32_t node){if(node<nodes.size()&&nodes[node].op==Op::Uniform&&nodes[node].uniform.kind==UniformKind::FragmentVarying)LoadVaryings(nodes[node].uniform.value);};
+    unsigned liveVertexAttributes=0,loadedVertexAttributes=0;
+    for(uint32_t i=0;i<nodes.size();++i)
+        if(live[i]&&nodes[i].op==Op::Uniform&&nodes[i].uniform.kind==UniformKind::VertexAttribute)++liveVertexAttributes;
+    auto LoadVertexAttribute=[&](uint32_t node){
+        if(stage==ShaderStage::Pixel||node>=nodes.size()||nodes[node].op!=Op::Uniform||
+           nodes[node].uniform.kind!=UniformKind::VertexAttribute||registers[node]!=Missing)return;
+        unsigned reg=0;while(reg<registerLimit&&occupied[reg])++reg;Need(reg<registerLimit,"vertex attribute register pressure exceeded");
+        occupied[reg]=true;registers[node]=reg;uniformValue[reg]=Missing;
+        result.code.push_back(UINT64_C(0x39c02180bc03f000)|(uint64_t(reg)<<32)|(uint64_t(nodes[node].uniform.value)<<6));
+        result.code.push_back(Nop);++loadedVertexAttributes;
+    };
+    auto Ensure=[&](uint32_t node){
+        if(node>=nodes.size()||nodes[node].op!=Op::Uniform)return;
+        if(nodes[node].uniform.kind==UniformKind::FragmentVarying)LoadVaryings(nodes[node].uniform.value);
+        else if(nodes[node].uniform.kind==UniformKind::VertexAttribute)LoadVertexAttribute(node);
+    };
     // Literals, constants and draw parameters are reloaded from the uniform
     // stream at each use rather than occupying a register across the program.
     auto Reloaded=[&](uint32_t node){const auto&n=nodes[node];return n.op==Op::Uniform&&n.uniform.kind!=UniformKind::FragmentVarying&&n.uniform.kind!=UniformKind::VertexAttribute&&n.uniform.kind!=UniformKind::TargetColor;};
     auto LoadUniform=[&](uint32_t node){
-        for(unsigned cached=0;cached<32;++cached)if(!occupied[cached]&&uniformValue[cached]==node){occupied[cached]=true;return cached;}
+        for(unsigned cached=0;cached<registerLimit;++cached)if(!occupied[cached]&&uniformValue[cached]==node){occupied[cached]=true;return cached;}
         // Put reloadable values in unused high registers. Short-lived ALU
         // results grow from the low end, preserving cached constants longer.
-        unsigned reg=32;
-        for(unsigned candidate=32;candidate-->0;)if(!occupied[candidate]&&uniformValue[candidate]==Missing){reg=candidate;break;}
-        if(reg==32)for(unsigned candidate=32;candidate-->0;)if(!occupied[candidate]){reg=candidate;break;}
-        Need(reg<32,"uniform register pressure exceeded");occupied[reg]=true;
+        unsigned reg=registerLimit;
+        for(unsigned candidate=registerLimit;candidate-->0;)if(!occupied[candidate]&&uniformValue[candidate]==Missing){reg=candidate;break;}
+        if(reg==registerLimit)for(unsigned candidate=registerLimit;candidate-->0;)if(!occupied[candidate]){reg=candidate;break;}
+        Need(reg<registerLimit,"uniform register pressure exceeded");occupied[reg]=true;
         uniformValue[reg]=node;auto uniform=nodes[node].uniform;
         if(uniform.kind==UniformKind::Literal){unsigned immediate=48;
             if(uniform.value<16)immediate=uniform.value;
@@ -733,7 +756,7 @@ Shader Compiler::Emit() {
         o.immediateB=ib!=Missing;o.immediateA=!o.immediateB&&ia!=Missing;
         if(o.immediateA)o.a=ia;else if(Reloaded(na)){o.a=LoadUniform(na);o.temps[o.count++]=o.a;}else o.a=registers[na];
         if(o.immediateB)o.b=ib;else if(nb==na)o.b=o.a;else if(Reloaded(nb)){o.b=LoadUniform(nb);o.temps[o.count++]=o.b;}else o.b=registers[nb];
-        Need((o.immediateA?o.a<48:o.a<32)&&(o.immediateB?o.b<48:o.b<32),"invalid scalar register assignment");return o;};
+        Need((o.immediateA?o.a<48:o.a<registerLimit)&&(o.immediateB?o.b<48:o.b<registerLimit),"invalid scalar register assignment");return o;};
     auto Release=[&](const Operands&o,uint32_t na,uint32_t nb,unsigned consumers){
         for(unsigned t=0;t<o.count;++t)occupied[o.temps[t]]=false;
         for(unsigned t=0;t<consumers;++t){if(!Reloaded(na)&&!--uses[na])occupied[registers[na]]=false;if(!Reloaded(nb)&&!--uses[nb])occupied[registers[nb]]=false;}
@@ -743,12 +766,12 @@ Shader Compiler::Emit() {
     // from a uniform loaded into a scratch register.
     std::vector<bool> outputWritten(roots.size());
     auto WriteOutputs=[&](){
-        if(stage==ShaderStage::Pixel)return;
+        if(stage==ShaderStage::Pixel||loadedVertexAttributes<liveVertexAttributes)return;
         for(unsigned c=0;c<roots.size();++c)if(!outputWritten[c]&&(registers[roots[c]]!=Missing||Reloaded(roots[c]))){
             bool constant=Reloaded(roots[c]);unsigned value=constant?LoadUniform(roots[c]):registers[roots[c]];
             if(c<16){result.code.push_back(UINT64_C(0x39c02180be03f000)|(uint64_t(c)<<6)|value);result.code.push_back(Nop);}
             else{
-                unsigned index=0;while(index<32&&occupied[index])++index;Need(index<32,"vertex output register pressure exceeded");
+                unsigned index=0;while(index<registerLimit&&occupied[index])++index;Need(index<registerLimit,"vertex output register pressure exceeded");
                 uniformValue[index]=Missing;
                 result.code.push_back(UINT64_C(0x39803186bb03f000)|(uint64_t(index)<<46));result.uniforms.push_back({UniformKind::Literal,c,0});result.code.push_back(Nop);
                 result.code.push_back(UINT64_C(0x38002180be03f000)|(uint64_t(index)<<6)|value);result.code.push_back(Nop);
@@ -756,13 +779,10 @@ Shader Compiler::Emit() {
             outputWritten[c]=true;if(constant||!--uses[roots[c]])occupied[value]=false;
         }
     };
-    // Vertex inputs and outputs share one VPM segment, so every attribute is
-    // read before the first output store can overwrite it.
-    if(stage!=ShaderStage::Pixel)for(uint32_t i=0;i<nodes.size();++i)if(live[i]&&nodes[i].op==Op::Uniform&&nodes[i].uniform.kind==UniformKind::VertexAttribute){
-        unsigned reg=0;while(reg<32&&occupied[reg])++reg;Need(reg<32,"vertex attribute register pressure exceeded");occupied[reg]=true;registers[i]=reg;
-        uniformValue[reg]=Missing;
-        result.code.push_back(UINT64_C(0x39c02180bc03f000)|(uint64_t(reg)<<32)|(uint64_t(nodes[i].uniform.value)<<6));result.code.push_back(Nop);
-    }
+    // Vertex attributes are loaded lazily as their first consumer is reached.
+    // Input and output values share VPM storage, so WriteOutputs stays blocked
+    // until every live input scalar has been read at least once. This avoids
+    // pinning a 32-scalar vertex in all 32 QPU registers before uniform loads.
     WriteOutputs();
     bool targetRead=false;
     for (uint32_t i = 0; i < nodes.size(); ++i) if (live[i]) {
@@ -772,7 +792,7 @@ Shader Compiler::Emit() {
             // All texture reads precede this final thread switch. Acquire the
             // tile scoreboard before reading the previous pixel color.
             result.code.insert(result.code.end(),{Switch,Switch,Nop});targetRead=true;
-            for(unsigned c=0;c<4;++c){unsigned reg=0;while(reg<32&&occupied[reg])++reg;Need(reg<32,"target color register pressure exceeded");
+            for(unsigned c=0;c<4;++c){unsigned reg=0;while(reg<registerLimit&&occupied[reg])++reg;Need(reg<registerLimit,"target color register pressure exceeded");
                 for(uint32_t n=i;n<nodes.size();++n)if(live[n]&&nodes[n].op==Op::Uniform&&nodes[n].uniform.kind==UniformKind::TargetColor&&nodes[n].uniform.value==c){occupied[reg]=true;registers[n]=reg;break;}
                 uniformValue[reg]=Missing;
                 result.code.push_back((c?UINT64_C(0x3a003186bb03f000):UINT64_C(0x3a203186bb03f000))|(uint64_t(reg)<<46));result.code.push_back(Nop);
@@ -785,9 +805,9 @@ Shader Compiler::Emit() {
             const auto&n=nodes[i];Ensure(n.c);
             Operands values=Fetch(n.b,n.c);
             unsigned mask=n.a==n.b?values.a:n.a==n.c?values.b:Reloaded(n.a)?LoadUniform(n.a):registers[n.a];
-            Need(mask<32,"invalid select mask register");
-            unsigned reg=0;while(reg<32&&occupied[reg])++reg;
-            Need(reg<32,"select register pressure exceeded");
+            Need(mask<registerLimit,"invalid select mask register");
+            unsigned reg=0;while(reg<registerLimit&&occupied[reg])++reg;
+            Need(reg<registerLimit,"select register pressure exceeded");
             result.code.push_back(qpu::SelectFalse(reg,mask,values.b));
             result.code.push_back(Add(182,reg,values.a,values.a)|(UINT64_C(0x28)<<46));
             Release(values,n.b,n.c,1);
@@ -800,8 +820,8 @@ Shader Compiler::Emit() {
             const auto &n=nodes[i];unsigned group=n.uniform.slot;if(sampleEmitted[group])continue;sampleEmitted[group]=true;const auto &lookup=lookups[group];bool constant=lookup.kind==Lookup::Constant;
             if(constant){result.constantSlot=constantSlot;result.constantWords=constantWords;result.constantDeclaredWords=constantSizes[constantSlot]*4;}
             Operands coordinates=Fetch(n.a,n.b);unsigned destinations[4],a=coordinates.a,b=coordinates.b;
-            for(unsigned c=0;c<lookup.words;++c)if(live[lookup.values[c]]){unsigned reg=0;while(reg<32&&occupied[reg])++reg;Need(reg<32,"texture register pressure exceeded");occupied[reg]=true;registers[lookup.values[c]]=destinations[c]=reg;}
-            unsigned scratch=0;while(scratch<32&&occupied[scratch])++scratch;Need(scratch<32,"texture temporary register pressure exceeded");
+            for(unsigned c=0;c<lookup.words;++c)if(live[lookup.values[c]]){unsigned reg=0;while(reg<registerLimit&&occupied[reg])++reg;Need(reg<registerLimit,"texture register pressure exceeded");occupied[reg]=true;registers[lookup.values[c]]=destinations[c]=reg;}
+            unsigned scratch=0;while(scratch<registerLimit&&occupied[scratch])++scratch;Need(scratch<registerLimit,"texture temporary register pressure exceeded");
             for(unsigned c=0;c<lookup.words;++c)if(!live[lookup.values[c]])destinations[c]=scratch;
             constexpr uint64_t Config=UINT64_C(0x3a403186bb03f000);uint32_t binding=constant?0:Remap(lookup.binding),token=binding<<PI5_BINDING_TOKEN_SHIFT;
             result.code.insert(result.code.end(),{Config,Config});
@@ -809,6 +829,7 @@ Shader Compiler::Emit() {
             result.uniforms.push_back({constant?UniformKind::ConstantSamplerConfig:UniformKind::SamplerConfig,constant?PI5_CONSTANT_SAMPLER_TOKEN:PI5_SAMPLER_TOKEN|token,binding});
             if(lookup.kind!=Lookup::Fetch1D)result.code.push_back(Add(182,34,b,b,true));
             result.code.insert(result.code.end(),{Add(182,lookup.kind==Lookup::Sample||constant?33:41,a,a,true),Nop,Switch,Nop,Nop,Nop});
+            internalThreadSwitch=true;
             for(unsigned c=0;c<lookup.words;++c){uniformValue[destinations[c]]=Missing;result.code.push_back(UINT64_C(0x38803186bb03f000)|(uint64_t(destinations[c])<<46));}
             unsigned consumers=0;for(unsigned c=0;c<lookup.words;++c)consumers+=live[lookup.values[c]];
             Release(coordinates,n.a,n.b,consumers);
@@ -819,11 +840,11 @@ Shader Compiler::Emit() {
             n.op==Op::And||n.op==Op::Or||n.op==Op::Xor||n.op==Op::Shl||n.op==Op::Shr||n.op==Op::Asr||
             n.op==Op::Imin||n.op==Op::Imax||n.op==Op::Umin||n.op==Op::Umax;
         Operands operands = Fetch(n.a,n.b,immediate);
-        unsigned reg = 0; while (reg < 32 && occupied[reg]) ++reg;
+        unsigned reg = 0; while (reg < registerLimit && occupied[reg]) ++reg;
         bool comparison=n.op==Op::Feq||n.op==Op::Fne||n.op==Op::Flt||n.op==Op::Fge||n.op==Op::Ieq||n.op==Op::Ine||n.op==Op::Ilt||n.op==Op::Ult||n.op==Op::Fzeq||n.op==Op::Fzne;
-        if(!comparison&&n.op!=Op::Ftz){if(!operands.immediateA&&((!Reloaded(n.a)&&uses[n.a]==(n.a==n.b?2u:1u))||(reg==32&&Reloaded(n.a))))reg=operands.a;
-            else if(!operands.immediateB&&((!Reloaded(n.b)&&uses[n.b]==1)||(reg==32&&Reloaded(n.b))))reg=operands.b;}
-        Need(reg < 32,"shader register pressure exceeds the 4-thread register bank");
+        if(!comparison&&n.op!=Op::Ftz){if(!operands.immediateA&&((!Reloaded(n.a)&&uses[n.a]==(n.a==n.b?2u:1u))||(reg==registerLimit&&Reloaded(n.a))))reg=operands.a;
+            else if(!operands.immediateB&&((!Reloaded(n.b)&&uses[n.b]==1)||(reg==registerLimit&&Reloaded(n.b))))reg=operands.b;}
+        Need(reg < registerLimit,"shader register pressure exceeds physical register bank");
         occupied[reg] = true; registers[i] = reg;uniformValue[reg]=Missing;
         {
             unsigned a = operands.a, b = operands.b;
@@ -854,8 +875,9 @@ Shader Compiler::Emit() {
                 result.code.push_back(Nop);
                 word = Nop & ~((UINT64_C(63) << 58) | (UINT64_C(1) << 45) | (UINT64_C(63) << 38) | (UINT64_C(4095) << 12));
                 result.code.push_back(word | (UINT64_C(3) << 58) | (uint64_t(reg) << 38) | (uint64_t(a) << 18) | (uint64_t(b) << 12));
-            } else if (n.op == Op::Reciprocal || n.op == Op::Rsqrt) {
-                result.code.push_back(Add(188,reg,a,n.op == Op::Rsqrt ? 33 : 32));
+            } else if (n.op == Op::Reciprocal || n.op == Op::Rsqrt || n.op == Op::Exp || n.op == Op::Log) {
+                unsigned selector=n.op==Op::Reciprocal?32:n.op==Op::Rsqrt?33:n.op==Op::Exp?34:35;
+                result.code.push_back(Add(188,reg,a,selector));
             } else if (n.op == Op::Round || n.op == Op::Trunc || n.op == Op::Floor || n.op == Op::Ceil || n.op == Op::Fdx || n.op == Op::Fdy) {
                 // Selector: operation base, unpacked 32-bit input (bit 2), unpacked output.
                 bool derivative = n.op == Op::Fdx || n.op == Op::Fdy;
@@ -877,17 +899,34 @@ Shader Compiler::Emit() {
         }
         // V3D 7.1 register-file SFU results have a two-instruction latency.
         // Keep one unpaired gap; MULTOP/UMUL24 also retains its trailing gap.
-        if (n.op == Op::Reciprocal || n.op == Op::Rsqrt || n.op == Op::Imul) result.code.push_back(Nop);
+        if (n.op == Op::Reciprocal || n.op == Op::Rsqrt || n.op == Op::Exp || n.op == Op::Log || n.op == Op::Imul) result.code.push_back(Nop);
         WriteOutputs();
     }
     if (stage == ShaderStage::Pixel && varyingScalars) LoadVaryings(varyingScalars - 1);
+    if(stage!=ShaderStage::Pixel&&loadedVertexAttributes<liveVertexAttributes){
+        // Inputs used only as final outputs may not have an ALU consumer.
+        // Drain those remaining live VPM reads before permitting the first
+        // output store; attributes with future ALU uses are still resident.
+        for(uint32_t i=0;i<nodes.size();++i)
+            if(live[i]&&nodes[i].op==Op::Uniform&&nodes[i].uniform.kind==UniformKind::VertexAttribute&&registers[i]==Missing)
+                LoadVertexAttribute(i);
+    }
+    WriteOutputs();
     for (unsigned c = 0; c < roots.size(); ++c) Need(stage == ShaderStage::Pixel || outputWritten[c],"vertex output was not produced");
     std::vector<unsigned> colors;
     if (stage == ShaderStage::Pixel) for (auto root : roots) colors.push_back(Reloaded(root) ? LoadUniform(root) : registers[root]);
-    if(!targetRead)result.code.insert(result.code.end(),{Switch,Switch,Nop});
+    // V3D 4.x non-fragment shaders can start directly in the post-last-THRSW
+    // section. For the RF32-RF63 fallback with no internal TMU switch, do not
+    // emit the old consecutive THRSW pair after VPM stores: with the matching
+    // shader-state final-section bit, the remaining THRSW is the program-end
+    // switch and its two delay slots. Keeping the pair would create a second
+    // "last THRSW" after the shader already started in its final section.
+    const bool finalSectionVertex=stage==ShaderStage::Vertex&&registerLimit==64&&!internalThreadSwitch;
+    if(!targetRead&&!finalSectionVertex)result.code.insert(result.code.end(),{Switch,Switch,Nop});
     for (unsigned c = 0; c < colors.size(); ++c) result.code.push_back(Add(182,c ? 7 : 8,colors[c],colors[c],true));
     if (stage == ShaderStage::Pixel) result.uniforms.push_back({UniformKind::Literal,0xffffff3fu,0});
-    result.code.insert(result.code.end(),{Nop,Switch,Nop,Nop});
+    if(finalSectionVertex)result.code.insert(result.code.end(),{Switch,Nop,Nop});
+    else result.code.insert(result.code.end(),{Nop,Switch,Nop,Nop});
     if(stage==ShaderStage::Pixel){
         // Pack only instructions explicitly emitted as plain arithmetic.
         // Varying interpolation, texture/scoreboard sequences and SFU delays
@@ -900,7 +939,8 @@ Shader Compiler::Emit() {
             if(allowed[i]&&first.valid)for(size_t j=i+1;j<result.code.size()&&j<=i+8;){
                 auto candidate=qpu::Decode(result.code[j]);if(!allowed[j]||!candidate.valid)break;
                 bool ready=true;for(size_t k=i+1;k<j;++k){auto prior=qpu::Decode(result.code[k]);
-                    if((candidate.writes&(prior.reads|prior.writes))||(candidate.reads&prior.writes)){ready=false;break;}}
+                    if((candidate.writes&(prior.reads|prior.writes))||(candidate.reads&prior.writes)||
+                       (candidate.uniformFifo&&prior.uniformFifo)){ready=false;break;}}
                 if(ready&&qpu::Merge(first,candidate)){result.code.erase(result.code.begin()+j);allowed.erase(allowed.begin()+j);continue;}
                 ++j;
             }
@@ -915,9 +955,17 @@ Shader Compiler::Emit() {
 // Sharing values extends their lifetime. Reduce the reuse window on register
 // pressure before falling back to entirely unshared lowering.
 Shader RunCompiler(ShaderStage stage,const uint8_t*data,size_t words,const ShaderSignature*link=nullptr,const ConstantBuffers*constants=nullptr,const ShaderBlend*blend=nullptr){
-    for(unsigned window:{64u,32u,16u,8u,0u}){
-        try{Compiler compiler(stage,link,constants,blend,window);return compiler.Run(data,words);}
-        catch(const Failure&e){if(!window||!std::strstr(e.what(),"register pressure"))throw;}
+    const unsigned limits[2]={32u,64u};
+    const unsigned attempts=stage==ShaderStage::Vertex?2u:1u;
+    for(unsigned pass=0;pass<attempts;++pass){
+        for(unsigned window:{64u,32u,16u,8u,0u}){
+            try{Compiler compiler(stage,link,constants,blend,window,limits[pass]);return compiler.Run(data,words);}
+            catch(const Failure&e){
+                if(!std::strstr(e.what(),"register pressure"))throw;
+                if(!window&&pass+1==attempts)throw;
+                if(!window)break;
+            }
+        }
     }
     throw Failure("shader register allocation failed");
 }

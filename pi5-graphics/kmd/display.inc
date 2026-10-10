@@ -30,10 +30,34 @@ static NTSTATUS Scanout(Adapter*a,const Reference&r,ULONG interval,bool noWait,U
     const auto &mode=a->display->GetCurrentMode(a->display->PostSource())->DispInfo;
     if(r.info.Width!=mode.Width||r.info.Height!=mode.Height||r.info.Pitch!=mode.Pitch||(r.info.Format!=87&&r.info.Format!=88))return STATUS_NOT_SUPPORTED;
     if(a->mmioFlips){NTSTATUS status=DirectScanout(a,r,0,false,a->display->PostSource());if(status==STATUS_SUCCESS&&interval>1)status=a->display->PostNative().WaitForRefresh(interval-1);return status;}
-    auto&native=a->display->PostNative();ULONG offset=0;BOOLEAN flip=interval!=0;
+    auto&native=a->display->PostNative();ULONG offset=0;
+    const BOOLEAN c1=a->siliconRevision==0;
+    const BOOLEAN flip=c1?TRUE:(interval!=0);
     NTSTATUS status=native.PrepareScanout(flip,&offset);if(status!=STATUS_SUCCESS)return status;
-    status=a->gpu.CopyScanout(r.offset,mode.Pitch,mode.Height,offset);if(status!=STATUS_SUCCESS)return status;
+    if(c1){
+        // Final Damian-reference isolation: a displayable C1 primary is forced
+        // linear, so no tiled shadow may exist. Bypass V3D CopyScanout entirely
+        // and CPU-copy the linear Windows primary into the inactive native
+        // scanout buffer before publishing the flip.
+        uint32_t shadow=a->gpu.FindShadow(r.identity,r.offset);
+        if(shadow!=UINT32_MAX){BddTrace(254,STATUS_DEVICE_CONFIGURATION_ERROR,shadow,static_cast<ULONG>(r.offset));return STATUS_DEVICE_CONFIGURATION_ERROR;}
+        SIZE_T bytes=SIZE_T(mode.Pitch)*mode.Height;
+        PUCHAR src=a->memory+r.offset;
+        PUCHAR dst=static_cast<PUCHAR>(native.ScanoutMemory())+offset;
+        CopyGraphicsMemory(dst,src,bytes);KeMemoryBarrier();
+        ULONG srcHash=2166136261u,dstHash=2166136261u;
+        const ULONG words=static_cast<ULONG>(bytes/4);
+        const volatile ULONG *sw=reinterpret_cast<const volatile ULONG*>(src);
+        const volatile ULONG *dw=reinterpret_cast<const volatile ULONG*>(dst);
+        const ULONG samples=1024u;
+        for(ULONG i=0;i<samples;++i){ULONG at=static_cast<ULONG>((ULONGLONG(i)*words)/samples);srcHash=(srcHash^sw[at])*16777619u;dstHash=(dstHash^dw[at])*16777619u;}
+        if(!(a->scanoutCopies&63u))BddTrace(254,srcHash==dstHash?STATUS_SUCCESS:STATUS_DATA_ERROR,srcHash,dstHash);
+        if(srcHash!=dstHash)return STATUS_DATA_ERROR;
+    }else{
+        status=a->gpu.CopyScanout(r.offset,mode.Pitch,mode.Height,offset);if(status!=STATUS_SUCCESS)return status;
+    }
     status=native.Presented(r.info.Width,r.info.Height);if(status!=STATUS_SUCCESS)return status;
+    if(c1&&!(a->scanoutCopies&63u))BddTrace(252,STATUS_SUCCESS,interval,offset);
     status=native.CommitScanout(offset,static_cast<LONGLONG>(r.offset),flip,noWait,interval,complete?CompleteFlipDma:nullptr,a,fence);if(status!=STATUS_SUCCESS)return status;
     a->displayed=r;++a->scanoutCopies;
     return STATUS_SUCCESS;
@@ -204,7 +228,7 @@ static NTSTATUS APIENTRY FullCommit(HANDLE adapter,const DXGKARG_COMMITVIDPN *re
         auto &displayed=request->AffectedVidPnSourceId?a->secondaryDisplayed:a->displayed;
         primary={};primary.offset=MAXULONGLONG;displayed=primary;UnlockPrimary(a);
         const auto&mode=a->display->GetCurrentMode(a->display->PostSource())->DispInfo;
-        if(a->mmioFlips){a->gpu.linearWidth=mode.Width;a->gpu.linearHeight=mode.Height;a->gpu.linearPitch=mode.Pitch;}
+        if(a->mmioFlips||a->siliconRevision==0){a->gpu.linearWidth=mode.Width;a->gpu.linearHeight=mode.Height;a->gpu.linearPitch=mode.Pitch;}
     }
     UnlockGpu(a);return s;
 }

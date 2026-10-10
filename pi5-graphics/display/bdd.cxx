@@ -9,6 +9,32 @@
 
 
 #include "BDD.hxx"
+#include <acpiioct.h>
+
+static NTSTATUS EvalAcpiInteger(PDEVICE_OBJECT device,const CHAR name[4],ULONG *value)
+{
+    if(!device||!value)return STATUS_INVALID_PARAMETER;
+    ACPI_EVAL_INPUT_BUFFER input={};
+    ACPI_EVAL_OUTPUT_BUFFER output={};
+    KEVENT event;IO_STATUS_BLOCK iosb={};
+    input.Signature=ACPI_EVAL_INPUT_BUFFER_SIGNATURE;
+    RtlCopyMemory(input.MethodName,name,4);
+    KeInitializeEvent(&event,NotificationEvent,FALSE);
+    PIRP irp=IoBuildDeviceIoControlRequest(IOCTL_ACPI_EVAL_METHOD,device,
+        &input,sizeof(input),&output,sizeof(output),FALSE,&event,&iosb);
+    if(!irp)return STATUS_INSUFFICIENT_RESOURCES;
+    NTSTATUS status=IoCallDriver(device,irp);
+    if(status==STATUS_PENDING){
+        KeWaitForSingleObject(&event,Executive,KernelMode,FALSE,nullptr);
+        status=iosb.Status;
+    }
+    if(!NT_SUCCESS(status))return status;
+    if(output.Signature!=ACPI_EVAL_OUTPUT_BUFFER_SIGNATURE||output.Count!=1||
+       output.Argument[0].Type!=ACPI_METHOD_ARGUMENT_INTEGER||
+       output.Argument[0].DataLength!=sizeof(ULONG))return STATUS_ACPI_INVALID_DATA;
+    *value=output.Argument[0].Argument;
+    return STATUS_SUCCESS;
+}
 
 NTSTATUS BddTrace(ULONG id, NTSTATUS status, ULONG a, ULONG b)
 {
@@ -103,6 +129,20 @@ NTSTATUS BASIC_DISPLAY_DRIVER::StartDevice(_In_  DXGK_START_INFO*   pDxgkStartIn
     }
 
     RecordStart(2,Status,NULL);
+
+    {
+        ULONG revision=MAXULONG;
+        NTSTATUS revisionStatus=EvalAcpiInteger(m_pPhysicalDevice,"_HRV",&revision);
+        BddTrace(116,revisionStatus,revision,0);
+        if(NT_SUCCESS(revisionStatus)){
+            if(revision>1)return STATUS_NOT_SUPPORTED;
+            m_SiliconRevision=revision;
+            // First C1 write-enabled milestone: validate one physical output
+            // before extending C1 to hotplug/dual-head. D0 is unchanged.
+            if(revision==0){m_SecondHeadEnabled=FALSE;m_AutoHotplug=FALSE;}
+        }
+    }
+
     // Ignore return value, since it's not the end of the world if we failed to write these values to the registry
     RegisterHWInfo();
 
@@ -131,10 +171,10 @@ NTSTATUS BASIC_DISPLAY_DRIVER::StartDevice(_In_  DXGK_START_INFO*   pDxgkStartIn
         m_CurrentModes[0].DispInfo.ColorFormat != D3DDDIFMT_X8R8G8B8)){
         RecordStart(4,STATUS_NOT_SUPPORTED,&m_CurrentModes[0].DispInfo);return STATUS_NOT_SUPPORTED;
     }
-    Status=PI5_DISPLAY_HW::FindPostPort(&m_DeviceInfo,&m_CurrentModes[0].DispInfo,&m_PostTarget);
+    Status=PI5_DISPLAY_HW::FindPostPort(&m_DeviceInfo,&m_CurrentModes[0].DispInfo,&m_PostTarget,m_SiliconRevision);
     if(Status!=STATUS_SUCCESS || m_PostTarget>=MAX_CHILDREN){RecordStart(7,Status,&m_CurrentModes[0].DispInfo);return Status==STATUS_SUCCESS?STATUS_NOT_SUPPORTED:Status;}
     auto& boot=m_CurrentModes[0];
-    Status=PostNative().Start(&m_DeviceInfo,&m_DxgkInterface,&boot.DispInfo,m_PostTarget,TRUE);
+    Status=PostNative().Start(&m_DeviceInfo,&m_DxgkInterface,&boot.DispInfo,m_PostTarget,TRUE,m_SiliconRevision);
     if(Status!=STATUS_SUCCESS){RecordStart(7,Status,&boot.DispInfo);return Status;}
     boot.FrameBuffer.Ptr=PostNative().Framebuffer();
     boot.DispInfo.PhysicAddress=PostNative().Address();
@@ -164,7 +204,7 @@ NTSTATUS BASIC_DISPLAY_DRIVER::StartOutput(ULONG target)
     if(Native(target).Active())return STATUS_SUCCESS;
     auto& mode=m_CurrentModes[SourceForTarget(target)];
     NTSTATUS status=PostNative().SecondaryMode(&mode.DispInfo);
-    if(status==STATUS_SUCCESS)status=Native(target).Start(&m_DeviceInfo,&m_DxgkInterface,&mode.DispInfo,target,FALSE);
+    if(status==STATUS_SUCCESS)status=Native(target).Start(&m_DeviceInfo,&m_DxgkInterface,&mode.DispInfo,target,FALSE,m_SiliconRevision);
     if(status!=STATUS_SUCCESS)return status;
     mode.FrameBuffer.Ptr=Native(target).Framebuffer();
     mode.DispInfo.PhysicAddress=Native(target).Address();

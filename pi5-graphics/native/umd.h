@@ -38,6 +38,13 @@ struct ShaderView {Resource *resource=nullptr;UINT firstElement=0,elements=0,com
 struct EventQuery {Resource marker;UINT serial=0;bool issued=false,ready=false;};
 struct Layout {std::vector<D3D10DDIARG_INPUT_ELEMENT_DESC> elements;};
 struct VertexBinding {Resource*resource=nullptr;UINT stride=0,offset=0;};
+struct UmdCallRecord {
+    volatile LONG sequence=0;
+    DWORD tick=0;
+    DWORD thread=0;
+    HRESULT failure=S_OK;
+    char where[48]={};
+};
 struct Device {
     D3D10DDI_HRTDEVICE runtime;
     D3D10DDI_HRTCORELAYER core;
@@ -46,6 +53,9 @@ struct Device {
     const DXGI_DDI_BASE_CALLBACKS *dxgi=nullptr;
     D3DDDICB_CREATECONTEXT context={};
     HRESULT failure=S_OK;
+    volatile LONG diagnosticSequence=0;
+    volatile LONG fatalCaptured=0;
+    UmdCallRecord diagnosticCalls[64]={};
     bool nativeDisplay=false;
     Program *vs=nullptr,*ps=nullptr;
     Resource *constants[2][14]={};

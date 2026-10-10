@@ -209,6 +209,9 @@ private:
 
     // Device information
     DXGK_DEVICE_INFO m_DeviceInfo;
+    // Firmware-authoritative BCM2712 generation from RPI1001._HRV:
+    // 0 = C0/C1, 1 = D0, MAXULONG = legacy/unknown firmware.
+    ULONG m_SiliconRevision = MAXULONG;
 
 public:
     PI5_DISPLAY_HW m_Native;

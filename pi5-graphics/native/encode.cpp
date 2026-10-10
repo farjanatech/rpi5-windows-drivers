@@ -99,9 +99,9 @@ bool EncodeDrawBatch(const Draw *draws,uint32_t count,uint32_t base,void *buffer
     for(uint32_t drawIndex=0;drawIndex<count;++drawIndex){const auto&d=draws[drawIndex];
         Need(d.width && d.height && d.width <= 4096 && d.height <= 4096 &&
              d.pitch >= d.width * 4 && d.pitch <= 65536 && !(d.pitch & 3),"invalid render surface dimensions");
-        Need(d.vertexScalars && d.vertexScalars<=16 && d.vertexCount && d.vertexCount <= 4096 && !(d.vertexCount % 3) && d.vertexStride >= d.vertexScalars*4 &&
+        Need(d.vertexScalars && d.vertexScalars<=PI5_MAX_VERTEX_SCALARS && d.vertexCount && d.vertexCount <= 4096 && !(d.vertexCount % 3) && d.vertexStride >= d.vertexScalars*4 &&
              d.vertexStride <= 4096 && !(d.vertexStride & 3),"invalid triangle vertex range");
-        Need(d.varyingScalars<=PI5_MAX_VARYINGS&&d.nonPerspectiveMask<(1u<<d.varyingScalars)&&d.flatMask<(1u<<d.varyingScalars)&&!(d.flatMask&d.nonPerspectiveMask),"invalid varying count or interpolation mask");
+        Need(Pi5ValidVaryingMasks(d.varyingScalars,d.nonPerspectiveMask,d.flatMask),"invalid varying count or interpolation mask");
         bool viewportSet=(d.viewport[0]|d.viewport[1]|d.viewport[2]|d.viewport[3])!=0;
         uint32_t viewportFixed[4]={};
         if(viewportSet)Need(Pi5ViewportRect(d.viewport,d.width,d.height,viewportFixed),"invalid viewport rectangle");
@@ -120,7 +120,7 @@ bool EncodeDrawBatch(const Draw *draws,uint32_t count,uint32_t base,void *buffer
              d.coordinateUniforms && d.vertexUniforms && d.pixelUniforms &&
              !((d.coordinateUniforms | d.vertexUniforms | d.pixelUniforms) & 3),"invalid shader addresses");
         const auto&first=draws[0];
-        Need(d.width==first.width&&d.height==first.height&&d.pitch==first.pitch&&d.tiledRows==first.tiledRows&&d.target==first.target&&d.tile==first.tile&&d.bgra==first.bgra&&d.loadTarget==first.loadTarget&&d.clearColor==first.clearColor,"incompatible batch surfaces");
+        Need(d.width==first.width&&d.height==first.height&&d.pitch==first.pitch&&d.tiledRows==first.tiledRows&&d.target==first.target&&d.tile==first.tile&&d.bgra==first.bgra&&d.loadTarget==first.loadTarget&&d.clearColor==first.clearColor&&d.v3dRevision==first.v3dRevision,"incompatible batch surfaces");
     }
     {const auto&d=draws[0];
         uint32_t tilesX = (d.width + TileWidth-1) / TileWidth, tilesY = (d.height + TileHeight-1) / TileHeight;
@@ -151,11 +151,28 @@ bool EncodeDrawBatch(const Draw *draws,uint32_t count,uint32_t base,void *buffer
         uint32_t records[PI5_MAX_BATCH_DRAWS]={};
         for(uint32_t n=0;n<count;++n){const auto&item=draws[n];
         w.Align(32);records[n] = w.Address(base);
-        w.Begin(0,32);w.Bits(1,1,1);w.Bits(13,1,1);w.Bits(21,1,1);w.Bits(15,1,item.varyingScalars!=0);w.Bits(24,8,item.varyingScalars);
+        w.Begin(0,32);w.Bits(1,1,1);
+        if(item.v3dRevision>=10){
+            // V3D 7.1.10 / BCM2712 D0: GL_SHADER_STATE_RECORD_DRAW_INDEX.
+            // Preserve Damian's original bit layout byte-for-byte.
+            w.Bits(13,1,1);                              // turn_off_early_z_test
+            w.Bits(21,1,1);                              // disable_implicit_point_line_varyings
+            w.Bits(15,1,item.varyingScalars!=0);          // real pixel-centre W
+        }else{
+            // V3D 7.1.6 / BCM2712 C1: original GL_SHADER_STATE_RECORD.
+            // 7.1.10 inserted draw-index/base-vertex fields and moved these
+            // same semantics within the first three bytes.
+            w.Bits(9,1,1);                               // turn_off_early_z_test
+            w.Bits(18,1,1);                              // disable_implicit_point_line_varyings
+            w.Bits(12,1,item.varyingScalars!=0);          // real pixel-centre W
+        }
+        w.Bits(24,8,item.varyingScalars);
         w.Bits(32,4,((item.vertexScalars>6?item.vertexScalars:6)+7)/8);w.Bits(48,4,((item.vertexScalars>4+item.varyingScalars?item.vertexScalars:4+item.varyingScalars)+7)/8);
-        w.Bits(64,32,item.pixelCode | ((item.fourThreadMask>>2)&1));w.Bits(96,32,item.pixelUniforms);
-        w.Bits(128,32,item.vertexCode | ((item.fourThreadMask>>1)&1));w.Bits(160,32,item.vertexUniforms);
-        w.Bits(192,32,item.coordinateCode | (item.fourThreadMask&1));w.Bits(224,32,item.coordinateUniforms);
+        // Low code-address bits are shader-state flags on V3D 4.x+:
+        // bit 0 = 4-way threadable, bit 1 = start in final thread section.
+        w.Bits(64,32,item.pixelCode | ((item.fourThreadMask>>2)&1) | (((item.finalThreadMask>>2)&1)<<1));w.Bits(96,32,item.pixelUniforms);
+        w.Bits(128,32,item.vertexCode | ((item.fourThreadMask>>1)&1) | (((item.finalThreadMask>>1)&1)<<1));w.Bits(160,32,item.vertexUniforms);
+        w.Bits(192,32,item.coordinateCode | (item.fourThreadMask&1) | ((item.finalThreadMask&1)<<1));w.Bits(224,32,item.coordinateUniforms);
         uint32_t attributes=(item.vertexScalars+3)/4;
         for(uint32_t i=0;i<attributes;++i){uint32_t values=item.vertexScalars-i*4;if(values>4)values=4;
             w.Begin(0,16);w.Bits(0,32,item.vertexAddress+i*16);w.Bits(32,2,values&3);w.Bits(34,3,6);w.Bits(39,1,1);
@@ -192,9 +209,19 @@ bool EncodeDrawBatch(const Draw *draws,uint32_t count,uint32_t base,void *buffer
         if(item.pipeline.Flags&1){const auto &b=item.pipeline.Blend;w.Begin(84,5);w.Bits(8,4,b[5]);w.Bits(12,4,b[3]);w.Bits(16,4,b[4]);w.Bits(20,4,b[2]);w.Bits(24,4,b[0]);w.Bits(28,4,b[1]);w.Bits(32,8,1);
             w.Begin(86,9);for(unsigned i=0;i<4;++i)w.Bits(8+i*16,16,item.pipeline.Constant[i]);}
         w.Begin(91,5);w.Bits(8,4,15);w.Bits(24,16,0x3f80);
-        w.Begin(97,1);if(item.flatMask){w.Begin(98,5);w.Bits(16,24,item.flatMask);w.Bits(12,2,1);w.Bits(14,2,1);}
-        w.Begin(99,1);
-        if(item.nonPerspectiveMask){w.Begin(100,5);w.Bits(16,24,item.nonPerspectiveMask);w.Bits(12,2,1);w.Bits(14,2,1);}
+        // Each hardware interpolation-flags packet covers 24 varyings. Clear
+        // the full state, then write each nonzero 24-scalar chunk at V0=chunk.
+        // This matches Mesa's offset model while keeping our 32-bit UMD masks.
+        auto VaryingFlags=[&](unsigned zeroCode,unsigned flagsCode,uint32_t mask){
+            w.Begin(zeroCode,1);
+            for(unsigned chunk=0;chunk<(PI5_MAX_VARYINGS+PI5_VARYING_FLAG_CHUNK-1)/PI5_VARYING_FLAG_CHUNK;++chunk){
+                uint32_t bits=chunk?mask>>PI5_VARYING_FLAG_CHUNK:mask&0x00ffffffu;
+                if(!bits)continue;
+                w.Begin(flagsCode,5);w.Bits(8,4,chunk);w.Bits(16,24,bits);
+            }
+        };
+        VaryingFlags(97,98,item.flatMask);
+        VaryingFlags(99,100,item.nonPerspectiveMask);
         w.Begin(88,1);
         w.Begin(71,2);w.Bits(8,8,0x22);
         w.Begin(64,5);w.Bits(8,32,records[n] | ((item.vertexScalars+3)/4));

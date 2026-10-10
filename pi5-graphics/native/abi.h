@@ -12,8 +12,20 @@
 #define PI5_MAX_BATCH_DRAWS 32u
 #define PI5_MAX_REFERENCES 32u
 #define PI5_MAX_LEVELS 13u
-// One flat-shade or non-perspective flags packet covers 24 varyings.
-#define PI5_MAX_VARYINGS 24u
+// This compiler keeps live vertex inputs in the 32-register QPU bank.
+// V3D 7.1 can expose more attributes, but 32 scalar inputs are the safe
+// implementation limit until the UMD grows vertex-input spilling.
+#define PI5_MAX_VERTEX_SCALARS 32u
+// V3D varying-flag packets cover 24 inputs at a selectable 24-scalar offset.
+#define PI5_VARYING_FLAG_CHUNK 24u
+// Pi5DrawCommand currently carries 32-bit interpolation masks, so expose two
+// packet chunks and stop at 32 scalars until the ABI grows wider masks.
+#define PI5_MAX_VARYINGS 32u
+inline bool Pi5ValidVaryingMasks(uint32_t count,uint32_t nonPerspective,uint32_t flat){
+    if(count>PI5_MAX_VARYINGS||(nonPerspective&flat))return false;
+    uint64_t valid=count==32?UINT64_C(0xffffffff):(count?((UINT64_C(1)<<count)-1):0);
+    return !(uint64_t(nonPerspective)&~valid)&&!(uint64_t(flat)&~valid);
+}
 #define PI5_MAX_PROGRAM_WORDS 32768u
 #define PI5_MAX_PROGRAM_UNIFORMS 8191u
 #define PI5_MAX_LOOKUPS 96u

@@ -1,0 +1,141 @@
+name: Build DWM UMD First-Fatal Diagnostic v1
+
+on:
+  push:
+    branches:
+      - dwm-umd-first-fatal-diag-v1
+    paths:
+      - 'pi5-graphics/**'
+      - '.github/workflows/build-dwm-umd-first-fatal-diag.yml'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify universal C1/D0 source invariants
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          python pi5-graphics/tests/check-universal-invariants.py
+          if($LASTEXITCODE){throw 'Universal source invariant check failed'}
+
+      - name: Verify diagnostic-only scope
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $base='c4d7a9feaeaa99f032547e33462ad056a4508c14'
+          $changed=@(git diff --name-only $base HEAD)
+          $allowed=@(
+            'pi5-graphics/native/umd.cpp',
+            'pi5-graphics/native/umd.h',
+            '.github/workflows/build-dwm-umd-first-fatal-diag.yml'
+          )
+          $unexpected=@($changed | Where-Object { $_ -notin $allowed })
+          if($unexpected.Count){throw ('Unexpected files changed: '+($unexpected -join ', '))}
+          if('pi5-graphics/native/umd.cpp' -notin $changed -or 'pi5-graphics/native/umd.h' -notin $changed){
+            throw 'Expected UMD diagnostic changes are missing.'
+          }
+
+      - name: Install WDK 26100 if needed
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $wdk='C:\Program Files (x86)\Windows Kits\10'
+          $ntddk="$wdk\Include\10.0.26100.0\km\ntddk.h"
+          if(!(Test-Path $ntddk)){
+            winget install --id Microsoft.WindowsWDK.10.0.26100 -e --silent --accept-package-agreements --accept-source-agreements
+            if($LASTEXITCODE){throw "WDK installation failed with exit code $LASTEXITCODE"}
+          }
+
+      - name: Run V3D revision encoder regression
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          New-Item Build -ItemType Directory -Force | Out-Null
+          $vswhere='C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe'
+          $vs=& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if(!$vs){throw 'Visual Studio x64 C++ tools not found'}
+          $vcvars=Join-Path $vs 'VC\Auxiliary\Build\vcvars64.bat'
+          $cmd='call "'+$vcvars+'" && cl /nologo /EHsc /std:c++20 /W4 /WX pi5-graphics\tests\encoder-revision-test.cpp /Fe:Build\encoder-revision-test.exe && Build\encoder-revision-test.exe'
+          & cmd.exe /d /s /c $cmd
+          if($LASTEXITCODE){throw 'V3D revision encoder regression failed'}
+
+      - name: Create test signing certificate
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $cert=New-SelfSignedCertificate -Type CodeSigningCert -Subject 'CN=Farjanatech RPi5 DWM UMD Diagnostic Test' -KeyAlgorithm RSA -KeyLength 2048 -HashAlgorithm SHA256 -CertStoreLocation Cert:\CurrentUser\My -NotAfter (Get-Date).AddYears(1)
+          "CERT_THUMB=$($cert.Thumbprint)" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Export-Certificate -Cert $cert -FilePath Build\Farjanatech-RPi5-DWM-UMD-Diagnostic-Test.cer | Out-Null
+
+      - name: Build and sign ARM64 diagnostic graphics package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          .\build.ps1 -Driver pi5-graphics -Output (Join-Path $PWD 'Build') -Configuration Release -SdkVersion '10.0.26100.0' -WdkVersion '10.0.26100.0' -CertificateThumbprint $env:CERT_THUMB
+          foreach($f in @('Pi5Graphics.sys','Pi5GraphicsPower.sys','Pi5D3D.dll','pi5graphics.inf','pi5graphics.cat')){
+            if(!(Test-Path (Join-Path 'Build\pi5-graphics' $f))){throw "Missing package file: $f"}
+          }
+          Select-String -Path Build\pi5-graphics\pi5graphics.inf -Pattern '1.0.0.0','ACPI\\RPI1001'
+
+      - name: Assemble diagnostic ZIP
+        shell: pwsh
+        run: |
+          $ErrorActionPreference='Stop'
+          $root='Build\RPi5-DWM-UMD-First-Fatal-Diag-v1'
+          $payload=Join-Path $root 'Payload\Graphics'
+          New-Item $payload -ItemType Directory -Force | Out-Null
+          foreach($f in @('Pi5Graphics.sys','Pi5GraphicsPower.sys','Pi5D3D.dll','pi5graphics.inf','pi5graphics.cat','LICENSE.txt','EDID-LICENSE.txt')){
+            Copy-Item (Join-Path 'Build\pi5-graphics' $f) $payload -Force
+          }
+          Copy-Item Build\Farjanatech-RPi5-DWM-UMD-Diagnostic-Test.cer $payload -Force
+          @"
+          RPi5 DWM UMD First-Fatal Diagnostic v1
+
+          Base source:
+            c4d7a9feaeaa99f032547e33462ad056a4508c14
+            Universal Graphics 1.0.0.0
+
+          Diagnostic scope:
+            - Pi5D3D.dll UMD instrumentation only.
+            - KMD/HVS/V3D/display behavior source is unchanged.
+            - Release build, not DEBUG behavior.
+            - Captures a 64-call UMD ring and graphics state on the first fatal HRESULT.
+            - Captures first calls to unsupported DXGI callbacks.
+            - Files are written under C:\ProgramData\Pi5GraphicsDiagnostics.
+
+          Reproduction:
+            1. Install this complete test-signed Graphics package using the same procedure used for Universal Graphics.
+            2. Reboot.
+            3. Start RPi5-C1-BlackScreen-PreArmed-Recorder-v1.0.
+            4. Reproduce: context menu -> Settings -> Time & language -> Date & time.
+            5. After black screen, reboot.
+            6. Collect/upload both the pre-armed result ZIP and files from C:\ProgramData\Pi5GraphicsDiagnostics.
+
+          Do not change UEFI, HVS settings, graphics-memory size, or BCD for this test.
+          "@ | Set-Content (Join-Path $root 'README.txt') -Encoding UTF8
+          @(
+            'RPi5 DWM UMD First-Fatal Diagnostic v1',
+            ('Branch: '+$env:GITHUB_REF_NAME),
+            ('Commit: '+$env:GITHUB_SHA),
+            'Base: c4d7a9feaeaa99f032547e33462ad056a4508c14',
+            'KMD/HVS/V3D source behavior unchanged from the base.'
+          ) | Set-Content (Join-Path $root 'BUILD-PROVENANCE.txt') -Encoding UTF8
+          Get-ChildItem $root -Recurse -File | ForEach-Object {
+            '{0}  {1}' -f (Get-FileHash $_.FullName -Algorithm SHA256).Hash,($_.FullName.Substring((Resolve-Path $root).Path.Length+1))
+          } | Set-Content (Join-Path $root 'SHA256SUMS.txt') -Encoding ASCII
+          $zip='Build\RPi5-DWM-UMD-First-Fatal-Diag-v1.zip'
+          Compress-Archive -Path "$root\*" -DestinationPath $zip -CompressionLevel Optimal -Force
+          Get-FileHash $zip -Algorithm SHA256 | Format-List
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RPi5-DWM-UMD-First-Fatal-Diag-v1
+          path: Build/RPi5-DWM-UMD-First-Fatal-Diag-v1.zip
+          if-no-files-found: error

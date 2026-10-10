@@ -110,6 +110,9 @@ NTSTATUS GpuPath::Start(PUCHAR memory,ULONG bytes){
 #endif
     TRY(Io(IOCTL_PI5_V3D_QUERY,nullptr,0,&status,sizeof(status)));
     if(status.TechVersion!=71)return STATUS_NOT_SUPPORTED;
+    v3dRevision=(status.HubIdent[3]>>8)&255u;
+    if(!v3dRevision)return STATUS_DEVICE_PROTOCOL_ERROR;
+    Pi5Trace(164,STATUS_SUCCESS,status.TechVersion,v3dRevision);
     TRY(Buffer(&code,PI5_UMD_COMMAND_BYTES,FALSE));TRY(Buffer(&uniform,131072,FALSE));TRY(Buffer(&cl,PI5_UMD_COMMAND_BYTES,FALSE));
     codeStaging=static_cast<PUCHAR>(Allocate(code.Bytes));uniformStaging=static_cast<PUCHAR>(Allocate(uniform.Bytes));
     if(!codeStaging||!uniformStaging)return STATUS_INSUFFICIENT_RESOURCES;
@@ -289,13 +292,18 @@ NTSTATUS GpuPath::PrepareDraw(const Pi5DrawCommand&command,const Pi5AllocationIn
             RtlZeroMemory(commands+PI5_UNIFORM_DESCRIPTORS,(PI5_BINDINGS+3)*64);
             for(unsigned i=0;i<3;++i){*uniformAddress[i]=uniform.Address+uniformUsed+uniformBytes;RtlCopyMemory(commands+uniformBytes,static_cast<const UCHAR*>(data)+p[i]->UniformOffset,p[i]->UniformCount*4);uniformBytes+=p[i]->UniformCount*4;}
             TRY(Bindings(*c,r,cpu,identities));ULONG descriptorBytes=c->BindingCount*64;
-            draw.fourThreadMask=0;
+            draw.fourThreadMask=0;draw.finalThreadMask=0;
             for(unsigned i=0;i<3;++i){
-                pi5::TexturePatches patches;const auto*program=p[i];
-                if(!programCache->Validate(reinterpret_cast<const uint64_t*>(static_cast<const UCHAR*>(data)+program->CodeOffset),program->CodeCount,reinterpret_cast<const uint32_t*>(static_cast<const UCHAR*>(data)+program->UniformOffset),program->UniformCount,pi5::DrawProgramRules(*c,i),&patches))return STATUS_INVALID_PARAMETER;
-                // V3D 7.1 has 32 physical registers per four-way thread.
-                // Validation restricts every program to RF0 through RF31.
-                draw.fourThreadMask|=1u<<i;
+                pi5::TexturePatches patches;const auto*program=p[i];uint64_t registers=0;
+                if(!programCache->Validate(reinterpret_cast<const uint64_t*>(static_cast<const UCHAR*>(data)+program->CodeOffset),program->CodeCount,reinterpret_cast<const uint32_t*>(static_cast<const UCHAR*>(data)+program->UniformOffset),program->UniformCount,pi5::DrawProgramRules(*c,i),&patches,&registers))return STATUS_INVALID_PARAMETER;
+                // V3D 7.1 is always at least 2-way threaded; the 4-way flag
+                // halves the physical RF space to RF0-RF31.
+                const bool highRegisters=(registers&UINT64_C(0xffffffff00000000))!=0;
+                if(!highRegisters)draw.fourThreadMask|=1u<<i;
+                // The UMD's 64-register fallback is vertex-only. If it has no
+                // TMU lookup, its corrected epilogue contains no "last THRSW"
+                // pair, so spawn it directly in the final thread section.
+                else if(i==1&&!patches.count)draw.finalThreadMask|=1u<<i;
                 if(!program->ConstantWords&&!patches.count)continue;
                 ULONG descriptor=PI5_UNIFORM_DESCRIPTORS+(PI5_BINDINGS+i)*64,sampler=descriptor+32;
                 if(program->ConstantWords){uint32_t packed=0;
@@ -312,7 +320,7 @@ NTSTATUS GpuPath::PrepareDraw(const Pi5DrawCommand&command,const Pi5AllocationIn
             }
             if(uniformBytes)RtlCopyMemory(uniformStaging+uniformUsed,commands,uniformBytes);
             if(descriptorBytes)RtlCopyMemory(uniformStaging+PI5_UNIFORM_DESCRIPTORS+batchCount*(PI5_BINDINGS+3)*64,commands+PI5_UNIFORM_DESCRIPTORS,descriptorBytes);
-            draw.vertexAddress=addresses[1]+c->VertexOffset;draw.vertexStride=c->VertexStride;draw.vertexCount=c->VertexCount;draw.vertexScalars=c->VertexComponents;draw.varyingScalars=c->VaryingScalars;draw.nonPerspectiveMask=c->NonPerspectiveMask;draw.flatMask=c->FlatMask;draw.pipeline=c->Pipeline;if(!opaqueLoads){draw.pipeline.Flags&=~PI5_PIPELINE_COVERAGE;RtlZeroMemory(draw.pipeline.Coverage,sizeof(draw.pipeline.Coverage));}draw.loadTarget=true;
+            draw.vertexAddress=addresses[1]+c->VertexOffset;draw.vertexStride=c->VertexStride;draw.vertexCount=c->VertexCount;draw.vertexScalars=c->VertexComponents;draw.varyingScalars=c->VaryingScalars;draw.nonPerspectiveMask=c->NonPerspectiveMask;draw.flatMask=c->FlatMask;draw.v3dRevision=v3dRevision;draw.pipeline=c->Pipeline;if(!opaqueLoads){draw.pipeline.Flags&=~PI5_PIPELINE_COVERAGE;RtlZeroMemory(draw.pipeline.Coverage,sizeof(draw.pipeline.Coverage));}draw.loadTarget=true;
             RtlCopyMemory(draw.viewport,c->Viewport,sizeof(draw.viewport));
             uniformUsed+=uniformBytes;++batchCount;return STATUS_SUCCESS;
 }
